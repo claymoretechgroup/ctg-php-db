@@ -69,6 +69,12 @@ class CTGDB {
             $sql = $query;
             $values = [];
         } else {
+            if (!isset($query['sql'])) {
+                throw new CTGDBError('INVALID_ARGUMENT',
+                    "Query array must contain an 'sql' key",
+                    ['keys' => array_keys($query)]
+                );
+            }
             $sql = $query['sql'];
             $values = $query['values'] ?? [];
         }
@@ -165,7 +171,7 @@ class CTGDB {
         $sql = "SELECT {$columns} FROM {$table}{$whereSql}";
 
         if (isset($config['order'])) {
-            $sql .= " ORDER BY {$config['order']}";
+            $sql .= " ORDER BY " . $this->validateOrderClause($config['order']);
         }
 
         if (isset($config['limit'])) {
@@ -223,7 +229,7 @@ class CTGDB {
         $values = [];
 
         foreach ($conditions as $col => $condition) {
-            $this->validateIdentifier($col);
+            $quotedCol = $this->validateIdentifier($col);
             $op = $condition['op'] ?? '=';
             $op = $this->validateOperator($op);
             $type = $condition['type'];
@@ -231,18 +237,18 @@ class CTGDB {
 
             if ($op === 'IN' || $op === 'NOT IN') {
                 $placeholders = implode(',', array_fill(0, count($val), '?'));
-                $parts[] = "{$col} {$op} ({$placeholders})";
+                $parts[] = "{$quotedCol} {$op} ({$placeholders})";
                 foreach ($val as $v) {
                     $values[] = ['type' => $type, 'value' => $v];
                 }
             } elseif ($op === 'IS' || $op === 'IS NOT') {
-                $parts[] = "{$col} {$op} NULL";
+                $parts[] = "{$quotedCol} {$op} NULL";
             } elseif ($op === 'BETWEEN') {
-                $parts[] = "{$col} BETWEEN ? AND ?";
+                $parts[] = "{$quotedCol} BETWEEN ? AND ?";
                 $values[] = ['type' => $type, 'value' => $val[0]];
                 $values[] = ['type' => $type, 'value' => $val[1]];
             } else {
-                $parts[] = "{$col} {$op} ?";
+                $parts[] = "{$quotedCol} {$op} ?";
                 $values[] = ['type' => $type, 'value' => $val];
             }
         }
@@ -284,10 +290,10 @@ class CTGDB {
         ?callable    $fn = null,
         mixed        $accumulator = []
     ): array {
-        $page = $config['page'] ?? 1;
-        $perPage = $config['per_page'] ?? 20;
+        $page = max(1, $config['page'] ?? 1);
+        $perPage = max(1, $config['per_page'] ?? 20);
         $offset = ($page - 1) * $perPage;
-        $sort = $config['sort'] ?? null;
+        $sort = isset($config['sort']) ? $this->validateIdentifier($config['sort']) : null;
         $order = isset($config['order']) ? $this->validateSortDirection($config['order']) : 'ASC';
 
         $total = $config['total'] ?? null;
@@ -414,8 +420,8 @@ class CTGDB {
         $parts = [];
         $values = [];
         foreach ($where as $col => $val) {
-            $this->validateIdentifier($col);
-            $parts[] = "{$col} = ?";
+            $quotedCol = $this->validateIdentifier($col);
+            $parts[] = "{$quotedCol} = ?";
             $values[] = $val;
         }
         $sql = !empty($parts) ? ' WHERE ' . implode(' AND ', $parts) : '';
@@ -479,6 +485,35 @@ class CTGDB {
             );
         }
         return strtoupper($clean);
+    }
+
+    // :: STRING -> STRING
+    // Validate and sanitize an ORDER BY clause (e.g., 'col ASC, col2 DESC')
+    protected function validateOrderClause(string $order): string {
+        $parts = array_map('trim', explode(',', $order));
+        $validated = [];
+        foreach ($parts as $part) {
+            $tokens = preg_split('/\s+/', $part);
+            $col = $this->validateIdentifier($tokens[0]);
+            if (isset($tokens[1])) {
+                $dir = $this->validateSortDirection($tokens[1]);
+                $validated[] = "{$col} {$dir}";
+            } else {
+                $validated[] = $col;
+            }
+        }
+        return implode(', ', $validated);
+    }
+
+    // :: STRING -> STRING
+    // Validate and sanitize a GROUP BY clause (e.g., 'col1, col2')
+    protected function validateGroupClause(string $group): string {
+        $parts = array_map('trim', explode(',', $group));
+        $validated = [];
+        foreach ($parts as $part) {
+            $validated[] = $this->validateIdentifier($part);
+        }
+        return implode(', ', $validated);
     }
 
     // :: STRING -> STRING
@@ -570,7 +605,7 @@ class CTGDB {
                 $jTable = $this->validateIdentifier($tables[$i]);
                 $onParts = [];
                 foreach ($joinDef['on'] as $left => $right) {
-                    $onParts[] = "{$left} = {$right}";
+                    $onParts[] = $this->validateIdentifier($left) . " = " . $this->validateIdentifier($right);
                 }
                 $joinClauses[] = "{$jType} JOIN {$jTable} ON " . implode(' AND ', $onParts);
             }
@@ -579,9 +614,15 @@ class CTGDB {
             $onArr = $config['on'] ?? [];
             foreach ($tables as $i => $tbl) {
                 $jTable = $this->validateIdentifier($tbl);
+                if (!isset($onArr[$i])) {
+                    throw new CTGDBError('INVALID_ARGUMENT',
+                        "Missing 'on' condition for join table: {$tbl}",
+                        ['table' => $tbl, 'index' => $i]
+                    );
+                }
                 $onParts = [];
                 foreach ($onArr[$i] as $left => $right) {
-                    $onParts[] = "{$left} = {$right}";
+                    $onParts[] = $this->validateIdentifier($left) . " = " . $this->validateIdentifier($right);
                 }
                 $joinClauses[] = "{$jType} JOIN {$jTable} ON " . implode(' AND ', $onParts);
             }
@@ -603,13 +644,13 @@ class CTGDB {
         }
 
         if (isset($config['group'])) {
-            $sql .= " GROUP BY {$config['group']}";
+            $sql .= " GROUP BY " . $this->validateGroupClause($config['group']);
         }
         if (isset($config['having'])) {
             $sql .= " HAVING {$config['having']}";
         }
         if (isset($config['order'])) {
-            $sql .= " ORDER BY {$config['order']}";
+            $sql .= " ORDER BY " . $this->validateOrderClause($config['order']);
         }
         if (isset($config['limit'])) {
             $sql .= " LIMIT " . (int)$config['limit'];
@@ -636,12 +677,12 @@ class CTGDB {
                 return $col;
             }
             if (preg_match('/^(.+)\s+as\s+(.+)$/i', $col, $m)) {
-                return trim($m[1]) . ' as ' . trim($m[2]);
+                return $this->validateIdentifier(trim($m[1])) . ' as ' . $this->validateIdentifier(trim($m[2]));
             }
             if (str_contains($col, '(')) {
                 return $col;
             }
-            return $col;
+            return $this->validateIdentifier($col);
         }, $columns));
     }
 }

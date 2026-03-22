@@ -93,6 +93,7 @@ class CTGDBError extends \Exception {
         if (is_string($key)) {
             return self::TYPES[$key] ?? null;
         }
-        return array_search($key, self::TYPES, true) ?: null;
+        $result = array_search($key, self::TYPES, true);
+        return $result !== false ? $result : null;
     }
 }

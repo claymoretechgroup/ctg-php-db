@@ -502,6 +502,115 @@ CTGTest::init('batch injection — multiple injection vectors at once')
     ->assert('all 6 attacks blocked', fn($r) => $r, 6)
     ->start(null, $config);
 
+// ═══════════════════════════════════════════════════════════════
+// SORT COLUMN INJECTION (paginate)
+// Sort column is now validated through validateIdentifier
+// ═══════════════════════════════════════════════════════════════
+
+$sortColPayloads = [
+    'DROP TABLE'        => 'id; DROP TABLE guitars;--',
+    'stacked query'     => 'id; SELECT 1;',
+    'UNION'             => 'id UNION SELECT 1,2,3,4,5',
+    'subquery'          => '(SELECT 1)',
+    'comment'           => 'id/**/UNION/**/SELECT/**/1',
+    'OR bypass'         => 'id OR 1=1',
+    'space injection'   => 'id --',
+    'backtick escape'   => 'id` FROM guitars;--`',
+    'comma injection'   => 'id, (SELECT password FROM users)',
+];
+
+foreach ($sortColPayloads as $label => $payload) {
+    CTGTest::init("sort column injection — {$label}")
+        ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
+        ->stage('attempt', function($db) use ($payload) {
+            try {
+                $db->paginate('guitars', [
+                    'sort' => $payload,
+                    'page' => 1,
+                    'per_page' => 3
+                ]);
+                return 'NOT BLOCKED';
+            } catch (CTGDBError $e) {
+                return $e->type;
+            }
+        })
+        ->assert('blocked', fn($r) => $r !== 'NOT BLOCKED', true)
+        ->start(null, $config);
+}
+
+// ═══════════════════════════════════════════════════════════════
+// JOIN ON COLUMN INJECTION
+// ON clause column references are now validated
+// ═══════════════════════════════════════════════════════════════
+
+$onPayloads = [
+    'DROP TABLE'    => 'guitars.id; DROP TABLE guitars;--',
+    'OR bypass'     => 'guitars.id OR 1=1',
+    'subquery'      => '(SELECT 1)',
+    'UNION'         => 'guitars.id UNION SELECT 1',
+    'comment'       => 'guitars.id/**/OR/**/1=1',
+    'single quote'  => "guitars.id' OR '1'='1",
+];
+
+foreach ($onPayloads as $label => $payload) {
+    CTGTest::init("join on column injection — {$label}")
+        ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
+        ->stage('attempt', function($db) use ($payload) {
+            try {
+                $db->read(['guitars', 'pickups'], [
+                    'join' => 'inner',
+                    'on' => [[$payload => 'pickups.guitar_id']]
+                ]);
+                return 'NOT BLOCKED';
+            } catch (\Exception $e) {
+                return 'BLOCKED';
+            }
+        })
+        ->assert('blocked', fn($r) => $r, 'BLOCKED')
+        ->start(null, $config);
+}
+
+// ═══════════════════════════════════════════════════════════════
+// ORDER CLAUSE INJECTION (read)
+// ORDER BY clause is now parsed and validated
+// ═══════════════════════════════════════════════════════════════
+
+$orderPayloads = [
+    'DROP TABLE'        => 'id; DROP TABLE guitars;--',
+    'subquery'          => '(SELECT 1) DESC',
+    'UNION'             => 'id UNION SELECT 1,2,3,4,5',
+    'sleep'             => 'SLEEP(5)',
+    'comment'           => 'id/**/UNION/**/SELECT/**/1',
+];
+
+foreach ($orderPayloads as $label => $payload) {
+    CTGTest::init("order clause injection — {$label}")
+        ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
+        ->stage('attempt', function($db) use ($payload) {
+            try {
+                $db->read('guitars', ['order' => $payload]);
+                return 'NOT BLOCKED';
+            } catch (\Exception $e) {
+                return 'BLOCKED';
+            }
+        })
+        ->assert('blocked', fn($r) => $r, 'BLOCKED')
+        ->start(null, $config);
+}
+
+// Verify valid order clauses still work
+CTGTest::init('order clause — valid single column ASC')
+    ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
+    ->stage('execute', fn($db) => $db->read('guitars', ['order' => 'year_purchased DESC']))
+    ->assert('most recent first', fn($r) => $r[0]['make'], 'Schecter')
+    ->start(null, $config);
+
+CTGTest::init('order clause — valid column without direction')
+    ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
+    ->stage('execute', fn($db) => $db->read('guitars', ['order' => 'make']))
+    ->assert('returns rows', fn($r) => count($r), 9)
+    ->start(null, $config);
+
 // Final integrity check — the database is intact after all attacks
 CTGTest::init('final integrity — guitars table intact after all attacks')
     ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))

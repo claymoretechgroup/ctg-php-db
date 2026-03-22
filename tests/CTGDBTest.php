@@ -634,3 +634,43 @@ CTGTest::init('validate — bad identifier throws')
     })
     ->assert('throws identifier error', fn($r) => in_array($r, ['INVALID_IDENTIFIER', 'INVALID_TABLE']), true)
     ->start(null, $config);
+
+CTGTest::init('validate — run() with missing sql key throws')
+    ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
+    ->stage('attempt', function($db) {
+        try {
+            $db->run(['values' => [1, 2, 3]]);
+            return 'no exception';
+        } catch (CTGDBError $e) {
+            return $e->type;
+        }
+    })
+    ->assert('throws INVALID_ARGUMENT', fn($r) => $r, 'INVALID_ARGUMENT')
+    ->start(null, $config);
+
+CTGTest::init('validate — missing on condition for join table throws')
+    ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
+    ->stage('attempt', function($db) {
+        try {
+            $db->read(['guitars', 'pickups'], [
+                'join' => 'inner',
+                'on' => []
+            ]);
+            return 'no exception';
+        } catch (CTGDBError $e) {
+            return $e->type;
+        }
+    })
+    ->assert('throws INVALID_ARGUMENT', fn($r) => $r, 'INVALID_ARGUMENT')
+    ->start(null, $config);
+
+CTGTest::init('validate — paginate clamps negative page to 1')
+    ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
+    ->stage('execute', fn($db) => $db->paginate('guitars', [
+        'sort' => 'id',
+        'page' => -1,
+        'per_page' => 3
+    ]))
+    ->assert('page clamped to 1', fn($r) => $r['pagination']['page'], 1)
+    ->assert('returns data', fn($r) => count($r['data']), 3)
+    ->start(null, $config);
