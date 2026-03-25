@@ -6,6 +6,7 @@ require_once __DIR__ . '/../vendor/autoload.php';
 use CTG\Test\CTGTest;
 use CTG\DB\CTGDB;
 use CTG\DB\CTGDBError;
+use CTG\DB\CTGDBQuery;
 use CTG\FnProg\CTGFnprog;
 
 // Integration tests — compose pipelines, CTGFnprog interop, end-to-end workflows
@@ -193,13 +194,12 @@ CTGTest::init('compose — pipelines from pipelines')
 
 // ── End-to-end: filter + paginate + transform ───────────────────
 
-CTGTest::init('end-to-end — filter + paginate')
+CTGTest::init('end-to-end — CTGDBQuery + paginate')
     ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
     ->stage('execute', function($db) {
-        $filter = $db->filter('guitars', [
-            'year_purchased' => ['type' => 'int', 'value' => 2015, 'op' => '>=']
-        ]);
-        return $db->paginate($filter, [
+        $query = CTGDBQuery::from('guitars')
+            ->where('year_purchased', '>=', 2015, 'int');
+        return $db->paginate($query, [
             'sort' => 'year_purchased',
             'order' => 'DESC',
             'page' => 1,
@@ -211,14 +211,12 @@ CTGTest::init('end-to-end — filter + paginate')
     ->assert('sorted DESC', fn($r) => (int)$r['data'][0]['year_purchased'] >= (int)$r['data'][1]['year_purchased'], true)
     ->start(null, $config);
 
-CTGTest::init('end-to-end — join + as_query + paginate')
+CTGTest::init('end-to-end — CTGDBQuery join + paginate')
     ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
     ->stage('execute', function($db) {
-        $query = $db->join(['guitars', 'pickups'], [
-            'on' => [['guitars.id' => 'pickups.guitar_id']],
-            'columns' => ['guitars.make', 'guitars.model', 'pickups.type'],
-            'as_query' => true
-        ]);
+        $query = CTGDBQuery::from('guitars')
+            ->join('pickups', 'inner', ['guitars.id' => 'pickups.guitar_id'])
+            ->columns('guitars.make', 'guitars.model', 'pickups.type');
         return $db->paginate($query, [
             'sort' => 'make',
             'page' => 1,
@@ -229,18 +227,15 @@ CTGTest::init('end-to-end — join + as_query + paginate')
     ->assert('has pagination metadata', fn($r) => $r['pagination']['per_page'], 5)
     ->start(null, $config);
 
-CTGTest::init('end-to-end — filter + join via where_raw')
+CTGTest::init('end-to-end — CTGDBQuery join + where')
     ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
     ->stage('execute', function($db) {
-        $filter = $db->filter('guitars', [
-            'year_purchased' => ['type' => 'int', 'value' => 2020, 'op' => '>=']
-        ]);
-        return $db->read(['guitars', 'pickups'], [
-            'join' => 'inner',
-            'on' => [['guitars.id' => 'pickups.guitar_id']],
-            'columns' => ['guitars.model', 'pickups.type'],
-            'where_raw' => $filter
-        ]);
+        return $db->read(
+            CTGDBQuery::from('guitars')
+                ->join('pickups', 'inner', ['guitars.id' => 'pickups.guitar_id'])
+                ->columns('guitars.model', 'pickups.type')
+                ->where('guitars.year_purchased', '>=', 2020, 'int')
+        );
     })
     ->assert('returns rows', fn($r) => count($r) > 0, true)
     ->assert('has model', fn($r) => isset($r[0]['model']), true)
