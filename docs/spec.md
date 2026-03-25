@@ -838,13 +838,12 @@ performance optimization in subclasses.
 
 ## WHERE Clause Behavior
 
-> **Preferred path:** Use `CTGDBQuery::from()->where()` for all read
-> query WHERE conditions. The string form of `where` described below
-> is **deprecated** for new code.
+Use `CTGDBQuery::from()->where()` for all read query WHERE conditions.
+`CTGDBQuery` supports the full operator set (`=`, `>`, `<`, `>=`, `<=`,
+`!=`, `LIKE`, `NOT LIKE`, `IN`, `NOT IN`, `IS`, `IS NOT`, `BETWEEN`).
 
-The `where` config in `read()` and other CRUD methods accepts two forms:
-
-**Associative array** — simple `=` conditions, auto-parameterized:
+The `where` config in `read()` accepts only the associative array form
+for backward compatibility with `update()` and `delete()`:
 
 ```php
 'where' => [
@@ -854,26 +853,9 @@ The `where` config in `read()` and other CRUD methods accepts two forms:
 // Generates: WHERE make = ? AND year_purchased = ?
 ```
 
-**String + values** — raw WHERE clause with explicit parameter binding
-(**removed** — use `CTGDBQuery::from()->where()`):
-
-```php
-'where' => 'make = ? AND year_purchased > ?',
-'values' => [
-    ['type' => 'str', 'value' => 'Fender'],
-    ['type' => 'int', 'value' => 2010]
-]
-```
-
-When `where` is a string, `values` must be provided. All values are
-bound through PDO prepared statements.
-
-`filter()` extends the associative array form with operator support
-(`>`, `LIKE`, `IN`, etc.) for more expressive conditions without
-resorting to raw strings.
-
-For anything beyond what `filter()` supports — OR conditions, complex
-subqueries, HAVING — use the string form or drop down to `run()`.
+String `where`, `where_raw`, and raw `having` are **removed** — passing
+a string to `where` throws `INVALID_ARGUMENT`. Use `CTGDBQuery` for all
+read queries, or `run()` for anything `CTGDBQuery` cannot express.
 
 ---
 

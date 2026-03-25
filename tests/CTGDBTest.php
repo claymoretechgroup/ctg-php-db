@@ -398,6 +398,22 @@ CTGTest::init('paginate — CTGDBQuery source')
     ->assert('data has 3 rows', fn($r) => count($r['data']), 3)
     ->start(null, $config);
 
+CTGTest::init('paginate — config sort overrides query orderBy')
+    ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
+    ->stage('execute', function($db) {
+        $query = CTGDBQuery::from('guitars')
+            ->orderBy('year_purchased', 'DESC');
+        $result = $db->paginate($query, [
+            'sort' => 'make',
+            'order' => 'ASC',
+            'page' => 1,
+            'per_page' => 9
+        ]);
+        return $result;
+    })
+    ->assert('sorted by make ASC not year DESC', fn($r) => $r['data'][0]['make'] <= $r['data'][1]['make'], true)
+    ->start(null, $config);
+
 CTGTest::init('paginate — raw query array source throws INVALID_ARGUMENT')
     ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
     ->stage('attempt', function($db) {
