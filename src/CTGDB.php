@@ -729,14 +729,20 @@ class CTGDB {
             if ($col === '*') {
                 return '*';
             }
-            if (str_contains($col, '*')) {
-                return $col;
+            // table.* — validate table part
+            if (preg_match('/^([a-zA-Z_][a-zA-Z0-9_]*)\.\*$/', $col, $m)) {
+                return $this->validateIdentifier($m[1]) . '.*';
             }
+            // col as alias or table.col as alias
             if (preg_match('/^(.+)\s+as\s+(.+)$/i', $col, $m)) {
                 return $this->validateIdentifier(trim($m[1])) . ' as ' . $this->validateIdentifier(trim($m[2]));
             }
-            if (str_contains($col, '(')) {
-                return $col;
+            // Reject raw expressions — use run() for aggregates
+            if (str_contains($col, '(') || str_contains($col, '*')) {
+                throw new CTGDBError('INVALID_IDENTIFIER',
+                    "Raw expressions not allowed in columns. Use run() for aggregates: {$col}",
+                    ['column' => $col]
+                );
             }
             return $this->validateIdentifier($col);
         }, $columns));
