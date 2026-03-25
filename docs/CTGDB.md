@@ -3,6 +3,10 @@
 Minimal PDO database class with a single low-level primitive (`run`)
 and CRUD convenience methods built on top. All queries use PDO prepared
 statements. Identifiers are regex-validated. Keywords are allowlisted.
+Read queries should use `CTGDBQuery` (see [CTGDBQuery.md](CTGDBQuery.md))
+for safe-by-default, structured query building — it validates all
+identifiers, allowlists all operators, and parameterizes all values by
+construction.
 
 ### Properties
 
@@ -84,14 +88,50 @@ $id = $db->create('guitars', [
 ]);
 ```
 
-### ctgdb.read :: STRING|ARRAY, ARRAY, ?(ARRAY, MIXED -> MIXED), MIXED -> MIXED
+### ctgdb.read :: STRING|ARRAY|ctgdbQuery, ARRAY, ?(ARRAY, MIXED -> MIXED), MIXED -> MIXED
 
-General-purpose read. When `tables` is a string, builds a single-table
+General-purpose read. The preferred usage is to pass a `CTGDBQuery`
+instance, which provides validated, parameterized query building with
+no raw SQL strings.
+
+**Preferred: CTGDBQuery**
+
+```php
+$guitars = $db->read(CTGDBQuery::from('guitars'));
+
+$fenders = $db->read(
+    CTGDBQuery::from('guitars')
+        ->columns('id', 'model', 'color')
+        ->where('make', '=', 'Fender', 'str')
+        ->orderBy('year_purchased', 'DESC')
+        ->limit(10)
+);
+
+$db->read(
+    CTGDBQuery::from('guitars')
+        ->join('pickups', 'inner', ['guitars.id' => 'pickups.guitar_id'])
+        ->columns('guitars.model', 'pickups.type')
+);
+```
+
+When `$tables` is a `CTGDBQuery`, `$config` is ignored — the query
+object contains all configuration. See [CTGDBQuery.md](CTGDBQuery.md)
+for full builder documentation.
+
+**Legacy: string and array forms**
+
+When `tables` is a string, builds a single-table
 SELECT with optional `columns`, `where`, `order`, and `limit` config.
 When `tables` is an array, builds a multi-table join using `join` and
-`on` config. Supports `where_raw` for composing with `filter()` results
-and `as_query` to return the built query array without executing.
-Validates all identifiers, join types, and sort directions.
+`on` config. Validates all identifiers, join types, and sort directions.
+
+The following config options are **(Deprecated)** — use `CTGDBQuery` instead:
+- `where` (string form) — use `CTGDBQuery::from()->where()`
+- `where_raw` — use `CTGDBQuery::from()->where()`
+- `as_query` — the `CTGDBQuery` object is the query; no config flag needed
+
+These options remain functional for backward compatibility but must not
+be used in new application code.
 
 ```php
 $guitars = $db->read('guitars');
@@ -137,6 +177,19 @@ $affected = $db->delete('pickups', [
 
 ### ctgdb.filter :: STRING, ARRAY -> ARRAY
 
+**(Deprecated)** — use `CTGDBQuery::from()->where()` instead. See
+[CTGDBQuery.md](CTGDBQuery.md).
+
+```php
+// Preferred replacement:
+$query = CTGDBQuery::from('guitars')
+    ->where('make', '=', 'Fender', 'str')
+    ->where('year_purchased', '>=', 2020, 'int');
+
+$page1 = $db->paginate($query, ['sort' => 'model', 'page' => 1]);
+$page2 = $db->paginate($query, ['page' => 2]);
+```
+
 Builds a reusable set of WHERE conditions with operator support.
 Returns a plain array with `table`, `where`, and `values` keys. The
 result can be passed to `paginate()`, composed with `read()` via
@@ -158,6 +211,9 @@ $page2 = $db->paginate($filter, ['page' => 2]);
 
 ### ctgdb.join :: STRING|ARRAY, ARRAY, ?(ARRAY, MIXED -> MIXED), MIXED -> MIXED
 
+**(Deprecated)** — use `CTGDBQuery::from()->join()` instead. See
+[CTGDBQuery.md](CTGDBQuery.md).
+
 Inner join shortcut. Delegates to `read()` with `join => 'inner'`.
 Accepts the same arguments and config options as `read()`.
 
@@ -170,6 +226,18 @@ $db->join(['guitars', 'pickups'], [
 
 ### ctgdb.leftJoin :: STRING|ARRAY, ARRAY, ?(ARRAY, MIXED -> MIXED), MIXED -> MIXED
 
+**(Deprecated)** — use `CTGDBQuery::from()->join()` instead. See
+[CTGDBQuery.md](CTGDBQuery.md).
+
+```php
+// Preferred replacement:
+$db->read(
+    CTGDBQuery::from('guitars')
+        ->join('pickups', 'left', ['guitars.id' => 'pickups.guitar_id'])
+        ->columns('guitars.model', 'pickups.position')
+);
+```
+
 Left join shortcut. Delegates to `read()` with `join => 'left'`.
 Accepts the same arguments and config options as `read()`.
 
@@ -180,14 +248,37 @@ $db->leftJoin(['guitars', 'pickups'], [
 ]);
 ```
 
-### ctgdb.paginate :: STRING|ARRAY, ARRAY, ?(ARRAY, MIXED -> MIXED), MIXED -> ARRAY
+### ctgdb.paginate :: STRING|ARRAY|ctgdbQuery, ARRAY, ?(ARRAY, MIXED -> MIXED), MIXED -> ARRAY
 
-Paginates any result set. Source can be a table name, a filter result,
-a join query (from `as_query`), or a raw query array. Runs a count
-query and a data query, returning `data` and `pagination` metadata.
-The `total` config option skips the count query when the total is
-already known. The fold function applies to `data` only — pagination
-metadata is always present.
+Paginates any result set. Source can be a table name, a `CTGDBQuery`
+instance, a filter result, a join query (from `as_query`), or a raw
+query array. Runs a count query and a data query, returning `data` and
+`pagination` metadata. The `total` config option skips the count query
+when the total is already known. The fold function applies to `data`
+only — pagination metadata is always present.
+
+**Preferred: CTGDBQuery**
+
+When `$source` is a `CTGDBQuery`, `page` and `per_page` from `$config`
+override the query's pagination, and `sort`/`order` override ORDER BY.
+
+```php
+$query = CTGDBQuery::from('guitars')
+    ->where('make', '=', 'Fender', 'str')
+    ->where('year_purchased', '>=', 2020, 'int');
+
+$result = $db->paginate($query, [
+    'sort' => 'year_purchased',
+    'order' => 'DESC',
+    'page' => 1,
+    'per_page' => 5
+]);
+
+// $result['data'] — array of rows
+// $result['pagination'] — {page, per_page, total_rows, total_pages, has_previous, has_next}
+```
+
+**Legacy: string and array forms**
 
 ```php
 $result = $db->paginate('guitars', [
@@ -267,7 +358,8 @@ Throws `INVALID_SORT`.
 
 Validates a filter operator against the allowlist: `=`, `>`, `<`,
 `>=`, `<=`, `!=`, `like`, `not like`, `in`, `not in`, `is`, `is not`,
-`between`. Throws `INVALID_OPERATOR`.
+`between`. Throws `INVALID_OPERATOR`. `CTGDBQuery` uses this same
+validation for its `where()` method.
 
 ### ctgdb.getPdo :: VOID -> \PDO
 

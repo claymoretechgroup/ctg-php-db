@@ -11,7 +11,10 @@ result set — including joins, subqueries, and aggregations.
 Supports parameterized queries with explicit typing and a
 fold/accumulator pattern for flexible result shaping.
 
-No query builder. No ORM. No magic. Data in, data out.
+`CTGDBQuery` is the structured query builder for read operations —
+the default path for all SELECT queries. It validates identifiers,
+allowlists operators, and parameterizes all values by construction.
+Queries that `CTGDBQuery` cannot express use `run()` directly.
 
 ---
 
@@ -20,7 +23,7 @@ No query builder. No ORM. No magic. Data in, data out.
 1. **`run` is the primitive** — every database operation flows through
    a single method that handles preparation, binding, and execution
 2. **Data-driven queries** — queries are represented as associative
-   arrays, not objects or builder chains
+   arrays or `CTGDBQuery` instances, not raw SQL strings
 3. **Fold over results** — callers control the shape of output via an
    optional transform function and accumulator (reduce/fold pattern)
 4. **Explicit types** — parameter types are declared, not inferred,
@@ -31,6 +34,9 @@ No query builder. No ORM. No magic. Data in, data out.
    regardless of how it was produced (table, filter, join, raw SQL)
 7. **Subclass-friendly** — methods are `protected` where needed so
    application-specific optimizations can override default behavior
+8. **Safe-by-default reads** — `CTGDBQuery` is the default read path;
+   all identifiers are validated, all operators are allowlisted, and
+   all values are parameterized by construction
 
 ---
 
@@ -79,13 +85,14 @@ final class CTGDB
     // Insert a single row, returns last insert ID
     public function create(string $table, array $data): int|string;
 
-    // :: STRING|ARRAY, ARRAY, ?(ARRAY, MIXED -> MIXED), MIXED -> ARRAY
+    // :: STRING|ARRAY|ctgdbQuery, ARRAY, ?(ARRAY, MIXED -> MIXED), MIXED -> MIXED
     // Read rows from one or more tables with optional transform
+    // When $tables is a CTGDBQuery, $config is ignored
     public function read(
-        string|array $tables,
-        array        $config = [],
-        ?callable    $fn = null,
-        mixed        $accumulator = []
+        string|array|CTGDBQuery $tables,
+        array                   $config = [],
+        ?callable               $fn = null,
+        mixed                   $accumulator = []
     ): mixed;
 
     // :: STRING, ARRAY, ARRAY -> INT
@@ -104,12 +111,14 @@ final class CTGDB
 
     // :: STRING, ARRAY -> ARRAY
     // Build a reusable filter with operator support
+    // @deprecated Use CTGDBQuery::from()->where() instead
     public function filter(string $table, array $conditions): array;
 
     // ─── Join Shortcuts ────────────────────────────────────
 
     // :: STRING|ARRAY, ARRAY, ?(ARRAY, MIXED -> MIXED), MIXED -> MIXED
     // Inner join shortcut — delegates to read() with join => 'inner'
+    // @deprecated Use CTGDBQuery::from()->join(..., 'inner', ...) instead
     public function join(
         string|array $tables,
         array        $config = [],
@@ -119,6 +128,7 @@ final class CTGDB
 
     // :: STRING|ARRAY, ARRAY, ?(ARRAY, MIXED -> MIXED), MIXED -> MIXED
     // Left join shortcut — delegates to read() with join => 'left'
+    // @deprecated Use CTGDBQuery::from()->join(..., 'left', ...) instead
     public function leftJoin(
         string|array $tables,
         array        $config = [],
@@ -128,13 +138,14 @@ final class CTGDB
 
     // ─── Pagination ────────────────────────────────────────
 
-    // :: STRING|ARRAY, ARRAY, ?(ARRAY, MIXED -> MIXED), MIXED -> ARRAY
+    // :: STRING|ARRAY|ctgdbQuery, ARRAY, ?(ARRAY, MIXED -> MIXED), MIXED -> ARRAY
     // Paginate any result set with metadata
+    // CTGDBQuery is the preferred source type
     public function paginate(
-        string|array $source,
-        array        $config = [],
-        ?callable    $fn = null,
-        mixed        $accumulator = []
+        string|array|CTGDBQuery $source,
+        array                   $config = [],
+        ?callable               $fn = null,
+        mixed                   $accumulator = []
     ): array;
 
     // ─── Composition ───────────────────────────────────────
@@ -351,19 +362,53 @@ $id = $db->create('guitars', [
 ### read()
 
 ```php
-// :: STRING|ARRAY, ARRAY, ?(ARRAY, MIXED -> MIXED), MIXED -> MIXED
+// :: STRING|ARRAY|ctgdbQuery, ARRAY, ?(ARRAY, MIXED -> MIXED), MIXED -> MIXED
 // Read rows from one or more tables with optional transform
 public function read(
-    string|array $tables,
-    array        $config = [],
-    ?callable    $fn = null,
-    mixed        $accumulator = []
+    string|array|CTGDBQuery $tables,
+    array                   $config = [],
+    ?callable               $fn = null,
+    mixed                   $accumulator = []
 ): mixed;
 ```
 
 The general-purpose read method. Handles single-table queries,
 multi-table joins, and everything in between based on what you
 pass as `$tables`.
+
+### CTGDBQuery — Preferred Usage
+
+`CTGDBQuery` is the preferred way to use `read()`. When `$tables` is a
+`CTGDBQuery` instance, `$config` is ignored — the query object contains
+all configuration (columns, WHERE, JOINs, ORDER BY, LIMIT).
+
+```php
+// Simple read
+$guitars = $db->read(
+    CTGDBQuery::from('guitars')
+        ->where('make', '=', 'Fender', 'str')
+        ->orderBy('model')
+        ->limit(10)
+);
+
+// Join read
+$rows = $db->read(
+    CTGDBQuery::from('guitars')
+        ->join('pickups', 'inner', ['guitars.id' => 'pickups.guitar_id'])
+        ->columns('guitars.model', 'pickups.type as pickup_type')
+        ->where('guitars.year_purchased', '>=', 2020, 'int')
+);
+
+// With fold
+$byMake = $db->read(
+    CTGDBQuery::from('guitars'),
+    [],
+    fn($row, $acc) => array_merge($acc, [$row['make'] => $row]),
+    []
+);
+```
+
+### Legacy Usage
 
 **When `$tables` is a string** — single table, simple query:
 
@@ -407,8 +452,8 @@ $db->read(['articles', 'categories', 'users'], [
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `columns` | `array` | `['*']` | Columns to select |
-| `where` | `array\|string` | `[]` | WHERE conditions (see WHERE Clause Behavior) |
-| `values` | `array` | `[]` | Bound values when `where` is a string |
+| `where` | `array\|string` | `[]` | WHERE conditions (see WHERE Clause Behavior). **String form deprecated** — use `CTGDBQuery::from()->where()` |
+| `values` | `array` | `[]` | Bound values when `where` is a string. **Deprecated with string `where`** |
 | `order` | `string` | `null` | ORDER BY clause |
 | `limit` | `int` | `null` | Max rows to return |
 
@@ -418,10 +463,10 @@ $db->read(['articles', 'categories', 'users'], [
 |-----|------|---------|-------------|
 | `join` | `string\|array` | *required* | Join type(s) |
 | `on` | `array` | *required* | Join conditions |
-| `where_raw` | `array` | `null` | A filter result to use as WHERE clause |
+| `where_raw` | `array` | `null` | A filter result to use as WHERE clause. **Deprecated** — use `CTGDBQuery` |
 | `group` | `string` | `null` | GROUP BY clause |
 | `having` | `string` | `null` | HAVING clause (use with `group`) |
-| `as_query` | `bool` | `false` | Return query array instead of executing |
+| `as_query` | `bool` | `false` | Return query array instead of executing. **Deprecated** — use `CTGDBQuery` directly |
 
 **Join type formats:**
 
@@ -553,6 +598,11 @@ $affected = $db->delete('pickups', [
 
 ## filter() — Building Reusable Conditions
 
+> **Deprecated.** Use `CTGDBQuery::from()->where()` as the replacement.
+> `CTGDBQuery` supports the full operator set (`=`, `>`, `LIKE`, `IN`,
+> `BETWEEN`, etc.) with validated identifiers and parameterized values.
+> This section is retained for reference and backward compatibility.
+
 ### Signature
 
 ```php
@@ -630,6 +680,12 @@ $page2 = $db->paginate($filter, ['page' => 2]);
 
 ## join() and leftJoin() — Convenience Shortcuts
 
+> **Deprecated.** Use `CTGDBQuery::from()->join()` instead.
+> `CTGDBQuery::from()->join($table, 'inner', $on)` replaces `join()`,
+> and `CTGDBQuery::from()->join($table, 'left', $on)` replaces
+> `leftJoin()`. This section is retained for reference and backward
+> compatibility.
+
 Syntactic sugar over `read()`. They accept the same arguments — they
 just preset the join type so you don't have to specify it.
 
@@ -672,29 +728,41 @@ $result = $db->paginate($query, ['sort' => 'guitars.make', 'page' => 1]);
 ### Signature
 
 ```php
-// :: STRING|ARRAY, ARRAY, ?(ARRAY, MIXED -> MIXED), MIXED -> ARRAY
+// :: STRING|ARRAY|ctgdbQuery, ARRAY, ?(ARRAY, MIXED -> MIXED), MIXED -> ARRAY
 // Paginate any result set with metadata
 public function paginate(
-    string|array $source,
-    array        $config = [],
-    ?callable    $fn = null,
-    mixed        $accumulator = []
+    string|array|CTGDBQuery $source,
+    array                   $config = [],
+    ?callable               $fn = null,
+    mixed                   $accumulator = []
 ): array;
 ```
 
 ### Source Types
 
-`$source` accepts four forms:
+`$source` accepts five forms. `CTGDBQuery` is the preferred source type:
 
 ```php
-// 1. Table name — paginate all rows
+// 1. CTGDBQuery — preferred source (safe-by-default)
+$query = CTGDBQuery::from('guitars')
+    ->join('pickups', 'inner', ['guitars.id' => 'pickups.guitar_id'])
+    ->columns('guitars.model', 'pickups.type as pickup_type')
+    ->where('guitars.year_purchased', '>=', 2020, 'int');
+
+$result = $db->paginate($query, [
+    'sort' => 'guitars.model',
+    'page' => 1,
+    'per_page' => 10
+]);
+
+// 2. Table name — paginate all rows
 $result = $db->paginate('guitars', [
     'sort' => 'year_purchased',
     'order' => 'DESC',
     'page' => 1
 ]);
 
-// 2. Filter result — paginate filtered rows
+// 3. Filter result — paginate filtered rows (deprecated, use CTGDBQuery)
 $filter = $db->filter('guitars', [
     'make' => ['type' => 'str', 'value' => 'Fender']
 ]);
@@ -704,7 +772,7 @@ $result = $db->paginate($filter, [
     'per_page' => 5
 ]);
 
-// 3. Join query — from read/join/leftJoin with as_query
+// 4. Join query — from read/join/leftJoin with as_query (deprecated, use CTGDBQuery)
 $query = $db->join(['guitars', 'pickups'], [
     'on' => [['guitars.id' => 'pickups.guitar_id']],
     'columns' => ['guitars.model', 'pickups.type'],
@@ -712,7 +780,7 @@ $query = $db->join(['guitars', 'pickups'], [
 ]);
 $result = $db->paginate($query, ['sort' => 'guitars.model', 'page' => 1]);
 
-// 4. Raw query array — paginate any arbitrary SQL
+// 5. Raw query array — paginate any arbitrary SQL
 $result = $db->paginate([
     'sql' => 'SELECT g.model, p.make as pickup_make
               FROM guitars g
@@ -801,6 +869,10 @@ performance optimization in subclasses.
 
 ## WHERE Clause Behavior
 
+> **Preferred path:** Use `CTGDBQuery::from()->where()` for all read
+> query WHERE conditions. The string form of `where` described below
+> is **deprecated** for new code.
+
 The `where` config in `read()` and other CRUD methods accepts two forms:
 
 **Associative array** — simple `=` conditions, auto-parameterized:
@@ -813,7 +885,8 @@ The `where` config in `read()` and other CRUD methods accepts two forms:
 // Generates: WHERE make = ? AND year_purchased = ?
 ```
 
-**String + values** — raw WHERE clause with explicit parameter binding:
+**String + values** — raw WHERE clause with explicit parameter binding
+(**deprecated** — use `CTGDBQuery::from()->where()`):
 
 ```php
 'where' => 'make = ? AND year_purchased > ?',
@@ -902,7 +975,14 @@ protected function validateOperator(string $op): string;
 | `delete()` | Table name, column names (where keys) |
 | `filter()` | Table name, column names, operators |
 | `paginate()` | Sort column, sort direction |
+| `CTGDBQuery` | Table name, column names, join types, operators, sort direction — **all validated by construction** |
 | `run()` | **No identifier validation** — raw SQL is the caller's responsibility |
+
+`CTGDBQuery` provides safe-by-default query building: every identifier
+is validated, every operator is allowlisted, and every value is
+parameterized. It is the recommended path for all read operations,
+particularly for AI-generated code where raw SQL strings pose an
+injection risk.
 
 ### Future: Schema Validation (v2)
 
@@ -1174,11 +1254,13 @@ ctg-php-db/
 │   └── spec.md
 ├── src/
 │   ├── CTGDB.php
-│   └── CTGDBError.php
+│   ├── CTGDBError.php
+│   └── CTGDBQuery.php
 ├── tests/
 │   ├── CTGDBErrorTest.php
 │   ├── CTGDBTest.php
-│   └── CTGDBIntegrationTest.php
+│   ├── CTGDBIntegrationTest.php
+│   └── CTGDBQueryTest.php
 ├── staging/                        # gitignored
 └── README.md
 ```
@@ -1219,3 +1301,7 @@ ctg-php-db/
 8. **join() / leftJoin()** — convenience shortcuts (delegate to read)
 9. **paginate()** — paging with metadata
 10. **compose()** — function pipelines with DB injection
+11. **CTGDBQuery** — structured query builder for read operations
+    (see `docs/CTGDBQuery.md` for full spec)
+12. **CTGDB integration** — update `read()` and `paginate()` to accept
+    `CTGDBQuery` instances

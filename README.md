@@ -2,8 +2,9 @@
 
 `ctg-php-db` is a minimal PHP database library built on PDO. One class,
 one connection, one low-level method (`run`) with CRUD convenience methods
-built on top. Filtering and pagination are separate, composable operations
-that work on any result set. All values are bound through PDO prepared
+built on top. `CTGDBQuery` is the default read path — a structured query
+builder where every column, operator, and value is validated and
+parameterized by construction. All values are bound through PDO prepared
 statements. All identifiers are validated before interpolation.
 
 **Key Features:**
@@ -12,8 +13,12 @@ statements. All identifiers are validated before interpolation.
   a single method that handles preparation, binding, and execution
 * **Fold over results** — callers control output shape via an optional
   transform function and accumulator
-* **Composable** — filter, join, and paginate are independent operations
-  that chain together
+* **Composable** — `CTGDBQuery` combines column selection, WHERE conditions,
+  joins, ordering, and pagination into a single structured object that
+  `read()` and `paginate()` accept directly
+* **AI-safe query building** — `CTGDBQuery` eliminates raw SQL strings
+  from the read path, so generated code cannot interpolate user input
+  into queries
 * **Explicit types** — parameter types map directly to PDO constants,
   no inference surprises
 * **SQL injection hardened** — values via PDO binding, identifiers via
@@ -40,6 +45,8 @@ $db = CTGDB::connect('localhost', 'myapp', 'user', 'pass');
 ### Basic CRUD
 
 ```php
+use CTG\DB\CTGDBQuery;
+
 $id = $db->create('guitars', [
     'make' => ['type' => 'str', 'value' => 'PRS'],
     'model' => ['type' => 'str', 'value' => 'Custom 24'],
@@ -47,12 +54,13 @@ $id = $db->create('guitars', [
     'year_purchased' => ['type' => 'int', 'value' => 2025]
 ]);
 
-$guitars = $db->read('guitars', [
-    'columns' => ['id', 'make', 'model'],
-    'where' => ['make' => ['type' => 'str', 'value' => 'Fender']],
-    'order' => 'year_purchased DESC',
-    'limit' => 10
-]);
+$guitars = $db->read(
+    CTGDBQuery::from('guitars')
+        ->columns('id', 'make', 'model')
+        ->where('make', '=', 'Fender', 'str')
+        ->orderBy('year_purchased', 'DESC')
+        ->limit(10)
+);
 
 $db->update('guitars',
     ['color' => ['type' => 'str', 'value' => 'Sunburst']],
@@ -84,36 +92,42 @@ $byId = $db->run(
 
 ### Filtering
 
-Build reusable conditions with operator support:
+Build reusable query conditions with full operator support:
 
 ```php
-$filter = $db->filter('guitars', [
-    'make' => ['type' => 'str', 'value' => 'Fender'],
-    'year_purchased' => ['type' => 'int', 'value' => 2020, 'op' => '>='],
-    'model' => ['type' => 'str', 'value' => '%Strat%', 'op' => 'LIKE'],
-]);
+use CTG\DB\CTGDBQuery;
 
-$page1 = $db->paginate($filter, ['sort' => 'model', 'page' => 1]);
-$page2 = $db->paginate($filter, ['page' => 2]);
+$query = CTGDBQuery::from('guitars')
+    ->where('make', '=', 'Fender', 'str')
+    ->where('year_purchased', '>=', 2020, 'int')
+    ->where('model', 'LIKE', '%Strat%', 'str');
+
+$page1 = $db->paginate($query, ['sort' => 'model', 'page' => 1]);
+$page2 = $db->paginate($query, ['sort' => 'model', 'page' => 2]);
 ```
 
 ### Joins
 
 ```php
-$db->join(['guitars', 'pickups'], [
-    'on' => [['guitars.id' => 'pickups.guitar_id']],
-    'columns' => ['guitars.model', 'pickups.position', 'pickups.type']
-]);
+use CTG\DB\CTGDBQuery;
 
-$db->leftJoin(['guitars', 'pickups'], [
-    'on' => [['guitars.id' => 'pickups.guitar_id']],
-    'columns' => ['guitars.model', 'pickups.position']
-]);
+$db->read(
+    CTGDBQuery::from('guitars')
+        ->join('pickups', 'inner', ['guitars.id' => 'pickups.guitar_id'])
+        ->columns('guitars.model', 'pickups.position', 'pickups.type')
+);
+
+$db->read(
+    CTGDBQuery::from('guitars')
+        ->join('pickups', 'left', ['guitars.id' => 'pickups.guitar_id'])
+        ->columns('guitars.model', 'pickups.position')
+);
 ```
 
 ### Pagination
 
-Paginate any source — table names, filter results, join queries, or raw SQL:
+Paginate any source — table names, query objects, or raw SQL.
+`CTGDBQuery` is the preferred source for pagination:
 
 ```php
 $result = $db->paginate('guitars', [
@@ -130,16 +144,12 @@ $result = $db->paginate('guitars', [
 ### Composing Filter + Join + Paginate
 
 ```php
-$filter = $db->filter('guitars', [
-    'year_purchased' => ['type' => 'int', 'value' => 2020, 'op' => '>=']
-]);
+use CTG\DB\CTGDBQuery;
 
-$query = $db->join(['guitars', 'pickups'], [
-    'on' => [['guitars.id' => 'pickups.guitar_id']],
-    'columns' => ['guitars.model', 'pickups.type'],
-    'where_raw' => $filter,
-    'as_query' => true
-]);
+$query = CTGDBQuery::from('guitars')
+    ->join('pickups', 'inner', ['guitars.id' => 'pickups.guitar_id'])
+    ->columns('guitars.model', 'pickups.type')
+    ->where('guitars.year_purchased', '>=', 2020, 'int');
 
 $result = $db->paginate($query, [
     'sort' => 'model',
@@ -154,10 +164,15 @@ $result = $db->paginate($query, [
 Build multi-step workflows that thread data and the DB instance:
 
 ```php
+use CTG\DB\CTGDBQuery;
 use CTG\FnProg\CTGFnprog;
 
 $pipeline = $db->compose([
-    fn($_, $db) => $db->read('guitars'),
+    fn($_, $db) => $db->read(
+        CTGDBQuery::from('guitars')
+            ->where('year_purchased', '>=', 2020, 'int')
+            ->orderBy('year_purchased', 'DESC')
+    ),
     fn($guitars, $_) => CTGFnprog::pipe([
         CTGFnprog::filter(fn($g) => $g['year_purchased'] >= 2020),
         CTGFnprog::sortBy('year_purchased', 'DESC'),
@@ -171,8 +186,12 @@ $recentGuitars = $pipeline();
 ### Composing Pipelines from Pipelines
 
 ```php
+use CTG\DB\CTGDBQuery;
+
 $getGuitars = $db->compose([
-    fn($_, $db) => $db->read('guitars'),
+    fn($_, $db) => $db->read(
+        CTGDBQuery::from('guitars')
+    ),
 ]);
 
 $formatForApi = $db->compose([

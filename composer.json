@@ -1,5 +1,6 @@
 {
     "name": "ctg/php-db",
+    "version": "1.0.0",
     "description": "Minimal PDO database library with fold/accumulator pattern",
     "type": "library",
     "license": "MIT",

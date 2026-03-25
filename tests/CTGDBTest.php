@@ -6,8 +6,9 @@ require_once __DIR__ . '/../vendor/autoload.php';
 use CTG\Test\CTGTest;
 use CTG\DB\CTGDB;
 use CTG\DB\CTGDBError;
+use CTG\DB\CTGDBQuery;
 
-// Tests for CTGDB — connection, run, CRUD, filter, join, paginate
+// Tests for CTGDB — connection, run, CRUD, read via CTGDBQuery, join, paginate
 // Requires a running MariaDB with guitars/pickups test data
 
 $config = ['output' => 'console'];
@@ -158,103 +159,84 @@ CTGTest::init('create — untyped values')
     ->stage('cleanup', fn($r) => $r['db']->run("DELETE FROM guitars WHERE make = 'Jackson'"))
     ->start(null, $config);
 
-// ── read() — single table ───────────────────────────────────────
+// ── read() via CTGDBQuery — single table ────────────────────────
 
-CTGTest::init('read — all rows')
+CTGTest::init('read via CTGDBQuery — all rows')
     ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
-    ->stage('execute', fn($db) => $db->read('guitars'))
+    ->stage('execute', fn($db) => $db->read(CTGDBQuery::from('guitars')))
     ->assert('returns 9 guitars', fn($r) => count($r), 9)
     ->start(null, $config);
 
-CTGTest::init('read — with columns')
+CTGTest::init('read via CTGDBQuery — with columns')
     ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
-    ->stage('execute', fn($db) => $db->read('guitars', [
-        'columns' => ['make', 'model']
-    ]))
+    ->stage('execute', fn($db) => $db->read(
+        CTGDBQuery::from('guitars')->columns('make', 'model')
+    ))
     ->assert('has make', fn($r) => isset($r[0]['make']), true)
     ->assert('has model', fn($r) => isset($r[0]['model']), true)
     ->assert('no color', fn($r) => isset($r[0]['color']), false)
     ->start(null, $config);
 
-CTGTest::init('read — with where')
+CTGTest::init('read via CTGDBQuery — with where')
     ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
-    ->stage('execute', fn($db) => $db->read('guitars', [
-        'where' => ['make' => ['type' => 'str', 'value' => 'Fender']]
-    ]))
+    ->stage('execute', fn($db) => $db->read(
+        CTGDBQuery::from('guitars')->where('make', '=', 'Fender', 'str')
+    ))
     ->assert('returns 3 Fenders', fn($r) => count($r), 3)
     ->start(null, $config);
 
-CTGTest::init('read — with order')
+CTGTest::init('read via CTGDBQuery — with order')
     ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
-    ->stage('execute', fn($db) => $db->read('guitars', [
-        'order' => 'year_purchased DESC'
-    ]))
+    ->stage('execute', fn($db) => $db->read(
+        CTGDBQuery::from('guitars')->orderBy('year_purchased', 'DESC')
+    ))
     ->assert('most recent first', fn($r) => $r[0]['make'], 'Schecter')
     ->start(null, $config);
 
-CTGTest::init('read — with limit')
+CTGTest::init('read via CTGDBQuery — with limit')
     ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
-    ->stage('execute', fn($db) => $db->read('guitars', ['limit' => 3]))
+    ->stage('execute', fn($db) => $db->read(
+        CTGDBQuery::from('guitars')->limit(3)
+    ))
     ->assert('returns 3 rows', fn($r) => count($r), 3)
     ->start(null, $config);
 
-CTGTest::init('read — with where string + values')
+CTGTest::init('read via CTGDBQuery — with transform')
     ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
-    ->stage('execute', fn($db) => $db->read('guitars', [
-        'where' => 'make = ? AND year_purchased >= ?',
-        'values' => [
-            ['type' => 'str', 'value' => 'Fender'],
-            ['type' => 'int', 'value' => 2019]
-        ]
-    ]))
-    ->assert('returns post-2019 Fenders', fn($r) => count($r), 2)
-    ->start(null, $config);
-
-CTGTest::init('read — with transform')
-    ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
-    ->stage('execute', fn($db) => $db->read('guitars', [
-        'columns' => ['make'],
-        'where' => ['make' => ['type' => 'str', 'value' => 'Fender']]
-    ], fn($record, $acc) => [...$acc, $record['make']]))
+    ->stage('execute', fn($db) => $db->read(
+        CTGDBQuery::from('guitars')
+            ->columns('make')
+            ->where('make', '=', 'Fender', 'str'),
+        [],
+        fn($record, $acc) => [...$acc, $record['make']]
+    ))
     ->assert('returns array of makes', fn($r) => $r, ['Fender', 'Fender', 'Fender'])
     ->start(null, $config);
 
-// ── read() — multi-table join ───────────────────────────────────
+// ── read() via CTGDBQuery — multi-table join ────────────────────
 
-CTGTest::init('read — inner join two tables')
+CTGTest::init('read via CTGDBQuery — inner join two tables')
     ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
-    ->stage('execute', fn($db) => $db->read(['guitars', 'pickups'], [
-        'join' => 'inner',
-        'on' => [['guitars.id' => 'pickups.guitar_id']],
-        'columns' => ['guitars.model', 'pickups.position', 'pickups.make as pickup_make']
-    ]))
+    ->stage('execute', fn($db) => $db->read(
+        CTGDBQuery::from('guitars')
+            ->join('pickups', 'inner', ['guitars.id' => 'pickups.guitar_id'])
+            ->columns('guitars.model', 'pickups.position', 'pickups.make as pickup_make')
+    ))
     ->assert('returns rows', fn($r) => count($r) > 0, true)
     ->assert('has model', fn($r) => isset($r[0]['model']), true)
     ->assert('has position', fn($r) => isset($r[0]['position']), true)
     ->assert('has pickup_make', fn($r) => isset($r[0]['pickup_make']), true)
     ->start(null, $config);
 
-CTGTest::init('read — inner join with where')
+CTGTest::init('read via CTGDBQuery — inner join with where')
     ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
-    ->stage('execute', fn($db) => $db->read(['guitars', 'pickups'], [
-        'join' => 'inner',
-        'on' => [['guitars.id' => 'pickups.guitar_id']],
-        'columns' => ['guitars.model', 'pickups.type'],
-        'where' => ['pickups.type' => ['type' => 'str', 'value' => 'active']]
-    ]))
+    ->stage('execute', fn($db) => $db->read(
+        CTGDBQuery::from('guitars')
+            ->join('pickups', 'inner', ['guitars.id' => 'pickups.guitar_id'])
+            ->columns('guitars.model', 'pickups.type')
+            ->where('pickups.type', '=', 'active', 'str')
+    ))
     ->assert('only active pickups', fn($r) => count($r), 2)
-    ->start(null, $config);
-
-CTGTest::init('read — as_query returns array not results')
-    ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
-    ->stage('execute', fn($db) => $db->read(['guitars', 'pickups'], [
-        'join' => 'inner',
-        'on' => [['guitars.id' => 'pickups.guitar_id']],
-        'columns' => ['guitars.model', 'pickups.type'],
-        'as_query' => true
-    ]))
-    ->assert('has sql key', fn($r) => isset($r['sql']), true)
-    ->assert('sql is string', fn($r) => is_string($r['sql']), true)
     ->start(null, $config);
 
 // ── update() ────────────────────────────────────────────────────
@@ -330,125 +312,9 @@ CTGTest::init('delete — empty where throws')
     ->assert('throws EMPTY_WHERE_DELETE', fn($r) => $r, 'EMPTY_WHERE_DELETE')
     ->start(null, $config);
 
-// ── filter() ────────────────────────────────────────────────────
+// ── left join via CTGDBQuery ────────────────────────────────────
 
-CTGTest::init('filter — equality')
-    ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
-    ->stage('execute', fn($db) => $db->filter('guitars', [
-        'make' => ['type' => 'str', 'value' => 'Fender']
-    ]))
-    ->assert('has table', fn($r) => $r['table'], 'guitars')
-    ->assert('has where clause', fn($r) => is_string($r['where']), true)
-    ->assert('has values', fn($r) => count($r['values']), 1)
-    ->start(null, $config);
-
-CTGTest::init('filter — comparison operator')
-    ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
-    ->stage('build', fn($db) => [
-        'db' => $db,
-        'filter' => $db->filter('guitars', [
-            'year_purchased' => ['type' => 'int', 'value' => 2020, 'op' => '>=']
-        ])
-    ])
-    ->stage('use with run', fn($ctx) => $ctx['db']->run([
-        'sql' => "SELECT * FROM {$ctx['filter']['table']} WHERE {$ctx['filter']['where']}",
-        'values' => $ctx['filter']['values']
-    ]))
-    ->assert('returns recent guitars', fn($r) => count($r) >= 4, true)
-    ->start(null, $config);
-
-CTGTest::init('filter — LIKE operator')
-    ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
-    ->stage('build', fn($db) => [
-        'db' => $db,
-        'filter' => $db->filter('guitars', [
-            'model' => ['type' => 'str', 'value' => '%Strat%', 'op' => 'LIKE']
-        ])
-    ])
-    ->stage('use with run', fn($ctx) => $ctx['db']->run([
-        'sql' => "SELECT * FROM {$ctx['filter']['table']} WHERE {$ctx['filter']['where']}",
-        'values' => $ctx['filter']['values']
-    ]))
-    ->assert('finds Stratocasters', fn($r) => count($r), 2)
-    ->start(null, $config);
-
-CTGTest::init('filter — IN operator')
-    ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
-    ->stage('build', fn($db) => [
-        'db' => $db,
-        'filter' => $db->filter('guitars', [
-            'make' => ['type' => 'str', 'value' => ['Fender', 'Gibson'], 'op' => 'IN']
-        ])
-    ])
-    ->stage('use with run', fn($ctx) => $ctx['db']->run([
-        'sql' => "SELECT * FROM {$ctx['filter']['table']} WHERE {$ctx['filter']['where']}",
-        'values' => $ctx['filter']['values']
-    ]))
-    ->assert('returns Fenders and Gibsons', fn($r) => count($r), 4)
-    ->start(null, $config);
-
-CTGTest::init('filter — BETWEEN operator')
-    ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
-    ->stage('build', fn($db) => [
-        'db' => $db,
-        'filter' => $db->filter('guitars', [
-            'year_purchased' => ['type' => 'int', 'value' => [2019, 2022], 'op' => 'BETWEEN']
-        ])
-    ])
-    ->stage('use with run', fn($ctx) => $ctx['db']->run([
-        'sql' => "SELECT * FROM {$ctx['filter']['table']} WHERE {$ctx['filter']['where']}",
-        'values' => $ctx['filter']['values']
-    ]))
-    ->assert('returns 2019-2022 guitars', fn($r) => count($r), 4)
-    ->start(null, $config);
-
-CTGTest::init('filter — multiple conditions AND-joined')
-    ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
-    ->stage('build', fn($db) => [
-        'db' => $db,
-        'filter' => $db->filter('guitars', [
-            'make' => ['type' => 'str', 'value' => 'Fender'],
-            'year_purchased' => ['type' => 'int', 'value' => 2019, 'op' => '>=']
-        ])
-    ])
-    ->stage('use with run', fn($ctx) => $ctx['db']->run([
-        'sql' => "SELECT * FROM {$ctx['filter']['table']} WHERE {$ctx['filter']['where']}",
-        'values' => $ctx['filter']['values']
-    ]))
-    ->assert('returns recent Fenders', fn($r) => count($r), 2)
-    ->start(null, $config);
-
-CTGTest::init('filter — invalid operator throws')
-    ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
-    ->stage('attempt', function($db) {
-        try {
-            $db->filter('guitars', [
-                'make' => ['type' => 'str', 'value' => 'x', 'op' => 'DROP TABLE']
-            ]);
-            return 'no exception';
-        } catch (CTGDBError $e) {
-            return $e->type;
-        }
-    })
-    ->assert('throws INVALID_OPERATOR', fn($r) => $r, 'INVALID_OPERATOR')
-    ->start(null, $config);
-
-// ── join() shortcut ─────────────────────────────────────────────
-
-CTGTest::init('join — inner join shortcut')
-    ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
-    ->stage('execute', fn($db) => $db->join(['guitars', 'pickups'], [
-        'on' => [['guitars.id' => 'pickups.guitar_id']],
-        'columns' => ['guitars.model', 'pickups.position', 'pickups.type']
-    ]))
-    ->assert('returns joined rows', fn($r) => count($r) > 0, true)
-    ->assert('has model', fn($r) => isset($r[0]['model']), true)
-    ->assert('has position', fn($r) => isset($r[0]['position']), true)
-    ->start(null, $config);
-
-// ── leftJoin() shortcut ─────────────────────────────────────────
-
-CTGTest::init('leftJoin — includes guitars without pickups')
+CTGTest::init('read via CTGDBQuery — left join includes guitars without pickups')
     ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
     ->stage('insert orphan', fn($db) => [
         'db' => $db,
@@ -462,11 +328,12 @@ CTGTest::init('leftJoin — includes guitars without pickups')
     ->stage('left join', fn($ctx) => [
         'db' => $ctx['db'],
         'id' => $ctx['id'],
-        'rows' => $ctx['db']->leftJoin(['guitars', 'pickups'], [
-            'on' => [['guitars.id' => 'pickups.guitar_id']],
-            'columns' => ['guitars.model', 'pickups.position'],
-            'where' => ['guitars.make' => ['type' => 'str', 'value' => 'Orphan']]
-        ])
+        'rows' => $ctx['db']->read(
+            CTGDBQuery::from('guitars')
+                ->join('pickups', 'left', ['guitars.id' => 'pickups.guitar_id'])
+                ->columns('guitars.model', 'pickups.position')
+                ->where('guitars.make', '=', 'Orphan', 'str')
+        )
     ])
     ->assert('returns orphan', fn($r) => count($r['rows']), 1)
     ->assert('position is null', fn($r) => $r['rows'][0]['position'], null)
@@ -520,12 +387,11 @@ CTGTest::init('paginate — last page')
     ->assert('has_next is false', fn($r) => $r['pagination']['has_next'], false)
     ->start(null, $config);
 
-CTGTest::init('paginate — filter source')
+CTGTest::init('paginate — CTGDBQuery source')
     ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
     ->stage('execute', fn($db) => $db->paginate(
-        $db->filter('guitars', [
-            'make' => ['type' => 'str', 'value' => 'Fender']
-        ]),
+        CTGDBQuery::from('guitars')
+            ->where('make', '=', 'Fender', 'str'),
         ['sort' => 'model', 'page' => 1, 'per_page' => 10]
     ))
     ->assert('total_rows is 3', fn($r) => $r['pagination']['total_rows'], 3)
@@ -545,21 +411,14 @@ CTGTest::init('paginate — raw query source')
     ->assert('has pagination', fn($r) => isset($r['pagination']['total_rows']), true)
     ->start(null, $config);
 
-CTGTest::init('paginate — join query source via as_query')
+CTGTest::init('paginate — CTGDBQuery join source')
     ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
-    ->stage('build query', fn($db) => [
-        'db' => $db,
-        'query' => $db->join(['guitars', 'pickups'], [
-            'on' => [['guitars.id' => 'pickups.guitar_id']],
-            'columns' => ['guitars.model', 'pickups.type'],
-            'as_query' => true
-        ])
-    ])
-    ->stage('paginate', fn($ctx) => $ctx['db']->paginate($ctx['query'], [
-        'sort' => 'model',
-        'page' => 1,
-        'per_page' => 5
-    ]))
+    ->stage('paginate', fn($db) => $db->paginate(
+        CTGDBQuery::from('guitars')
+            ->join('pickups', 'inner', ['guitars.id' => 'pickups.guitar_id'])
+            ->columns('guitars.model', 'pickups.type'),
+        ['sort' => 'model', 'page' => 1, 'per_page' => 5]
+    ))
     ->assert('has data', fn($r) => count($r['data']) > 0, true)
     ->assert('has pagination', fn($r) => $r['pagination']['page'], 1)
     ->start(null, $config);
@@ -590,14 +449,11 @@ CTGTest::init('paginate — pre-computed total skips count')
 
 // ── Validation ──────────────────────────────────────────────────
 
-CTGTest::init('validate — bad join type throws')
-    ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
-    ->stage('attempt', function($db) {
+CTGTest::init('validate — bad join type throws via CTGDBQuery')
+    ->stage('attempt', function($_) {
         try {
-            $db->read(['guitars', 'pickups'], [
-                'join' => 'EVIL',
-                'on' => [['guitars.id' => 'pickups.guitar_id']]
-            ]);
+            CTGDBQuery::from('guitars')
+                ->join('pickups', 'EVIL', ['guitars.id' => 'pickups.guitar_id']);
             return 'no exception';
         } catch (CTGDBError $e) {
             return $e->type;
@@ -622,11 +478,10 @@ CTGTest::init('validate — bad sort direction throws')
     ->assert('throws INVALID_SORT', fn($r) => $r, 'INVALID_SORT')
     ->start(null, $config);
 
-CTGTest::init('validate — bad identifier throws')
-    ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
-    ->stage('attempt', function($db) {
+CTGTest::init('validate — bad identifier throws via CTGDBQuery')
+    ->stage('attempt', function($_) {
         try {
-            $db->read('guitars; DROP TABLE guitars;--');
+            CTGDBQuery::from('guitars; DROP TABLE guitars;--');
             return 'no exception';
         } catch (CTGDBError $e) {
             return $e->type;
@@ -648,14 +503,11 @@ CTGTest::init('validate — run() with missing sql key throws')
     ->assert('throws INVALID_ARGUMENT', fn($r) => $r, 'INVALID_ARGUMENT')
     ->start(null, $config);
 
-CTGTest::init('validate — missing on condition for join table throws')
-    ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
-    ->stage('attempt', function($db) {
+CTGTest::init('validate — missing on condition for join via CTGDBQuery')
+    ->stage('attempt', function($_) {
         try {
-            $db->read(['guitars', 'pickups'], [
-                'join' => 'inner',
-                'on' => []
-            ]);
+            CTGDBQuery::from('guitars')
+                ->join('pickups', 'inner', []);
             return 'no exception';
         } catch (CTGDBError $e) {
             return $e->type;

@@ -6,6 +6,7 @@ require_once __DIR__ . '/../vendor/autoload.php';
 use CTG\Test\CTGTest;
 use CTG\DB\CTGDB;
 use CTG\DB\CTGDBError;
+use CTG\DB\CTGDBQuery;
 
 // Security tests — SQL injection mitigation across all attack surfaces
 // These tests verify that no user-controlled input can alter SQL structure.
@@ -154,12 +155,9 @@ foreach ($columnPayloads as $label => $payload) {
 
 foreach ($columnPayloads as $label => $payload) {
     CTGTest::init("column injection — WHERE key with {$label}")
-        ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
-        ->stage('attempt', function($db) use ($payload) {
+        ->stage('attempt', function($_) use ($payload) {
             try {
-                $db->read('guitars', [
-                    'where' => [$payload => ['type' => 'str', 'value' => 'Fender']]
-                ]);
+                CTGDBQuery::from('guitars')->where($payload, '=', 'Fender', 'str');
                 return 'NOT BLOCKED';
             } catch (\Exception $e) {
                 return 'BLOCKED';
@@ -212,22 +210,6 @@ foreach ($valuePayloads as $label => $payload) {
         ->start(null, $config);
 }
 
-foreach ($valuePayloads as $label => $payload) {
-    CTGTest::init("value injection — filter with {$label}")
-        ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
-        ->stage('execute', function($db) use ($payload) {
-            $filter = $db->filter('guitars', [
-                'make' => ['type' => 'str', 'value' => $payload]
-            ]);
-            return $db->run([
-                'sql' => "SELECT * FROM {$filter['table']} WHERE {$filter['where']}",
-                'values' => $filter['values']
-            ]);
-        })
-        ->assert('returns empty — payload treated as literal data', fn($r) => count($r), 0)
-        ->start(null, $config);
-}
-
 // Verify values with injection payloads can round-trip through create/read/delete
 CTGTest::init('value injection — payload stored and retrieved as literal data')
     ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
@@ -262,71 +244,6 @@ CTGTest::init('value injection — guitars table survived')
     ->start(null, $config);
 
 // ═══════════════════════════════════════════════════════════════
-// OPERATOR INJECTION
-// filter() operators are validated against a hardcoded allowlist
-// ═══════════════════════════════════════════════════════════════
-
-$operatorPayloads = [
-    'DROP TABLE'        => 'DROP TABLE guitars;--',
-    'stacked SQL'       => '= 1; DROP TABLE guitars;--',
-    'UNION'             => 'UNION',
-    'OR bypass'         => 'OR 1=1',
-    'comment'           => '= 1 --',
-    'semicolon'         => ';',
-    'nested operator'   => '>= 1 OR 1=1',
-    'double operator'   => '= = =',
-    'empty string'      => '',
-    'null byte'         => "\x00; DROP TABLE guitars;--",
-    'sleep'             => '= SLEEP(5)',
-    'into outfile'      => "INTO OUTFILE '/tmp/pwned'",
-    'case bypass'       => 'lIkE',  // valid operator in different case — should be allowed
-];
-
-foreach ($operatorPayloads as $label => $payload) {
-    // Skip 'lIkE' — that's a valid operator
-    if ($label === 'case bypass') continue;
-
-    CTGTest::init("operator injection — {$label}")
-        ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
-        ->stage('attempt', function($db) use ($payload) {
-            try {
-                $db->filter('guitars', [
-                    'make' => ['type' => 'str', 'value' => 'x', 'op' => $payload]
-                ]);
-                return 'NOT BLOCKED';
-            } catch (CTGDBError $e) {
-                return $e->type;
-            }
-        })
-        ->assert('blocked as INVALID_OPERATOR', fn($r) => $r, 'INVALID_OPERATOR')
-        ->start(null, $config);
-}
-
-// Verify valid operators still work
-$validOperators = ['=', '>', '<', '>=', '<=', '!=', 'LIKE', 'NOT LIKE', 'IN', 'NOT IN', 'IS', 'IS NOT', 'BETWEEN'];
-
-foreach ($validOperators as $op) {
-    CTGTest::init("operator allowlist — {$op} is valid")
-        ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
-        ->stage('attempt', function($db) use ($op) {
-            try {
-                $condition = match(strtoupper($op)) {
-                    'IN', 'NOT IN'   => ['type' => 'str', 'value' => ['Fender'], 'op' => $op],
-                    'IS', 'IS NOT'   => ['type' => 'null', 'value' => null, 'op' => $op],
-                    'BETWEEN'        => ['type' => 'int', 'value' => [2000, 2025], 'op' => $op],
-                    default          => ['type' => 'str', 'value' => 'Fender', 'op' => $op],
-                };
-                $db->filter('guitars', ['make' => $condition]);
-                return 'ALLOWED';
-            } catch (CTGDBError $e) {
-                return 'BLOCKED: ' . $e->type;
-            }
-        })
-        ->assert('allowed', fn($r) => $r, 'ALLOWED')
-        ->start(null, $config);
-}
-
-// ═══════════════════════════════════════════════════════════════
 // JOIN TYPE INJECTION
 // Join type is interpolated directly — must be from allowlist
 // ═══════════════════════════════════════════════════════════════
@@ -345,13 +262,9 @@ $joinPayloads = [
 
 foreach ($joinPayloads as $label => $payload) {
     CTGTest::init("join type injection — {$label}")
-        ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
-        ->stage('attempt', function($db) use ($payload) {
+        ->stage('attempt', function($_) use ($payload) {
             try {
-                $db->read(['guitars', 'pickups'], [
-                    'join' => $payload,
-                    'on' => [['guitars.id' => 'pickups.guitar_id']]
-                ]);
+                CTGDBQuery::from('guitars')->join('pickups', $payload, ['guitars.id' => 'pickups.guitar_id']);
                 return 'NOT BLOCKED';
             } catch (CTGDBError $e) {
                 return $e->type;
@@ -392,37 +305,6 @@ foreach ($sortDirPayloads as $label => $payload) {
             }
         })
         ->assert('blocked as INVALID_SORT', fn($r) => $r, 'INVALID_SORT')
-        ->start(null, $config);
-}
-
-// ═══════════════════════════════════════════════════════════════
-// FILTER COLUMN NAME INJECTION
-// Column names inside filter() conditions
-// ═══════════════════════════════════════════════════════════════
-
-$filterColPayloads = [
-    'stacked query'     => "make; DROP TABLE guitars;--",
-    'OR bypass'         => "make OR 1=1",
-    'subquery column'   => "(SELECT 1)",
-    'comment escape'    => "make/**/OR/**/1=1",
-    'backtick escape'   => "make` OR `1`=`1",
-    'single quote'      => "make' OR '1'='1",
-];
-
-foreach ($filterColPayloads as $label => $payload) {
-    CTGTest::init("filter column injection — {$label}")
-        ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
-        ->stage('attempt', function($db) use ($payload) {
-            try {
-                $db->filter('guitars', [
-                    $payload => ['type' => 'str', 'value' => 'Fender']
-                ]);
-                return 'NOT BLOCKED';
-            } catch (\Exception $e) {
-                return 'BLOCKED';
-            }
-        })
-        ->assert('blocked', fn($r) => $r, 'BLOCKED')
         ->start(null, $config);
 }
 
@@ -485,9 +367,8 @@ CTGTest::init('batch injection — multiple injection vectors at once')
         $attacks = [
             fn() => $db->read("guitars; DROP TABLE guitars;--"),
             fn() => $db->create("guitars; DROP TABLE guitars;--", ['make' => 'x']),
-            fn() => $db->read('guitars', ['where' => ["id; DROP TABLE guitars;--" => 1]]),
-            fn() => $db->filter('guitars', ['make' => ['type' => 'str', 'value' => 'x', 'op' => 'DROP']]),
-            fn() => $db->read(['guitars', 'pickups'], ['join' => 'EVIL', 'on' => [['guitars.id' => 'pickups.guitar_id']]]),
+            fn() => CTGDBQuery::from('guitars')->where('make', 'DROP', 'x', 'str'),
+            fn() => CTGDBQuery::from('guitars')->join('pickups', 'EVIL', ['guitars.id' => 'pickups.guitar_id']),
             fn() => $db->paginate('guitars', ['sort' => 'id', 'order' => 'EVIL']),
         ];
         foreach ($attacks as $attack) {
@@ -499,7 +380,7 @@ CTGTest::init('batch injection — multiple injection vectors at once')
         }
         return $blocked;
     })
-    ->assert('all 6 attacks blocked', fn($r) => $r, 6)
+    ->assert('all 5 attacks blocked', fn($r) => $r, 5)
     ->start(null, $config);
 
 // ═══════════════════════════════════════════════════════════════
@@ -554,13 +435,9 @@ $onPayloads = [
 
 foreach ($onPayloads as $label => $payload) {
     CTGTest::init("join on column injection — {$label}")
-        ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
-        ->stage('attempt', function($db) use ($payload) {
+        ->stage('attempt', function($_) use ($payload) {
             try {
-                $db->read(['guitars', 'pickups'], [
-                    'join' => 'inner',
-                    'on' => [[$payload => 'pickups.guitar_id']]
-                ]);
+                CTGDBQuery::from('guitars')->join('pickups', 'inner', [$payload => 'pickups.guitar_id']);
                 return 'NOT BLOCKED';
             } catch (\Exception $e) {
                 return 'BLOCKED';
@@ -571,8 +448,8 @@ foreach ($onPayloads as $label => $payload) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// ORDER CLAUSE INJECTION (read)
-// ORDER BY clause is now parsed and validated
+// ORDER CLAUSE INJECTION (CTGDBQuery)
+// ORDER BY column is validated through validateIdentifier
 // ═══════════════════════════════════════════════════════════════
 
 $orderPayloads = [
@@ -585,10 +462,9 @@ $orderPayloads = [
 
 foreach ($orderPayloads as $label => $payload) {
     CTGTest::init("order clause injection — {$label}")
-        ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
-        ->stage('attempt', function($db) use ($payload) {
+        ->stage('attempt', function($_) use ($payload) {
             try {
-                $db->read('guitars', ['order' => $payload]);
+                CTGDBQuery::from('guitars')->orderBy($payload);
                 return 'NOT BLOCKED';
             } catch (\Exception $e) {
                 return 'BLOCKED';
@@ -601,13 +477,17 @@ foreach ($orderPayloads as $label => $payload) {
 // Verify valid order clauses still work
 CTGTest::init('order clause — valid single column ASC')
     ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
-    ->stage('execute', fn($db) => $db->read('guitars', ['order' => 'year_purchased DESC']))
+    ->stage('execute', fn($db) => $db->read(
+        CTGDBQuery::from('guitars')->orderBy('year_purchased', 'DESC')
+    ))
     ->assert('most recent first', fn($r) => $r[0]['make'], 'Schecter')
     ->start(null, $config);
 
 CTGTest::init('order clause — valid column without direction')
     ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
-    ->stage('execute', fn($db) => $db->read('guitars', ['order' => 'make']))
+    ->stage('execute', fn($db) => $db->read(
+        CTGDBQuery::from('guitars')->orderBy('make')
+    ))
     ->assert('returns rows', fn($r) => count($r), 9)
     ->start(null, $config);
 

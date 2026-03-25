@@ -142,14 +142,18 @@ class CTGDB {
         ]);
     }
 
-    // :: STRING|ARRAY, ARRAY, ?(ARRAY, MIXED -> MIXED), MIXED -> MIXED
+    // :: STRING|ARRAY|ctgdbQuery, ARRAY, ?(ARRAY, MIXED -> MIXED), MIXED -> MIXED
     // Read rows from one or more tables with optional transform
     public function read(
-        string|array $tables,
-        array        $config = [],
-        ?callable    $fn = null,
-        mixed        $accumulator = []
+        string|array|CTGDBQuery $tables,
+        array                   $config = [],
+        ?callable               $fn = null,
+        mixed                   $accumulator = []
     ): mixed {
+        if ($tables instanceof CTGDBQuery) {
+            return $this->run($tables->toStatement(), $fn, $accumulator);
+        }
+
         if (is_array($tables)) {
             return $this->_readJoin($tables, $config, $fn, $accumulator);
         }
@@ -282,13 +286,13 @@ class CTGDB {
         return $this->read($tables, array_merge($config, ['join' => 'left']), $fn, $accumulator);
     }
 
-    // :: STRING|ARRAY, ARRAY, ?(ARRAY, MIXED -> MIXED), MIXED -> ARRAY
+    // :: STRING|ARRAY|ctgdbQuery, ARRAY, ?(ARRAY, MIXED -> MIXED), MIXED -> ARRAY
     // Paginate any result set with metadata
     public function paginate(
-        string|array $source,
-        array        $config = [],
-        ?callable    $fn = null,
-        mixed        $accumulator = []
+        string|array|CTGDBQuery $source,
+        array                   $config = [],
+        ?callable               $fn = null,
+        mixed                   $accumulator = []
     ): array {
         $page = max(1, $config['page'] ?? 1);
         $perPage = max(1, $config['per_page'] ?? 20);
@@ -297,6 +301,26 @@ class CTGDB {
         $order = isset($config['order']) ? $this->validateSortDirection($config['order']) : 'ASC';
 
         $total = $config['total'] ?? null;
+
+        if ($source instanceof CTGDBQuery) {
+            if ($total === null) {
+                $countResult = $this->run($source->toCountStatement());
+                $total = (int)$countResult[0]['total'];
+            }
+
+            $query = clone $source;
+            if ($sort !== null) {
+                $query->orderBy($sort, $order);
+            }
+            $query->page($page, $perPage);
+
+            $data = $this->run($query->toStatement(), $fn, $accumulator);
+
+            return [
+                'data' => $data,
+                'pagination' => $this->buildPaginationMeta($page, $perPage, $total),
+            ];
+        }
 
         if (is_string($source)) {
             $table = $this->validateIdentifier($source);
