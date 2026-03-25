@@ -131,6 +131,8 @@ CTGTest::init('all validation codes in 3xxx range')
         CTGDBError::lookup('INVALID_ARGUMENT'),
         CTGDBError::lookup('EMPTY_WHERE_DELETE'),
         CTGDBError::lookup('INVALID_IDENTIFIER'),
+        CTGDBError::lookup('INVALID_AGGREGATE'),
+        CTGDBError::lookup('INVALID_QUERY_STATE'),
     ])
     ->assert('INVALID_TABLE', fn($r) => $r[0], 3000)
     ->assert('INVALID_COLUMN', fn($r) => $r[1], 3001)
@@ -140,6 +142,8 @@ CTGTest::init('all validation codes in 3xxx range')
     ->assert('INVALID_ARGUMENT', fn($r) => $r[5], 3005)
     ->assert('EMPTY_WHERE_DELETE', fn($r) => $r[6], 3006)
     ->assert('INVALID_IDENTIFIER', fn($r) => $r[7], 3007)
+    ->assert('INVALID_AGGREGATE', fn($r) => $r[8], 3008)
+    ->assert('INVALID_QUERY_STATE', fn($r) => $r[9], 3009)
     ->start(null, $config);
 
 // ── Chainable on() handler ──────────────────────────────────────

@@ -189,11 +189,12 @@ class CTGDB {
 
         if (isset($config['where'])) {
             if (is_string($config['where'])) {
-                $whereSql = " WHERE {$config['where']}";
-                $values = $config['values'] ?? [];
-            } else {
-                [$whereSql, $values] = $this->buildWhere($config['where']);
+                throw new CTGDBError('INVALID_ARGUMENT',
+                    'String where is no longer supported in read(). Use CTGDBQuery instead.',
+                    ['where' => $config['where']]
+                );
             }
+            [$whereSql, $values] = $this->buildWhere($config['where']);
         }
 
         $sql = "SELECT {$columns} FROM {$table}{$whereSql}";
@@ -679,23 +680,30 @@ class CTGDB {
         $sql = "SELECT {$columns} FROM {$validatedBase} " . implode(' ', $joinClauses);
 
         if (isset($config['where_raw'])) {
-            $sql .= " WHERE {$config['where_raw']['where']}";
-            $values = $config['where_raw']['values'];
-        } elseif (isset($config['where'])) {
+            throw new CTGDBError('INVALID_ARGUMENT',
+                'where_raw is no longer supported. Use CTGDBQuery instead.',
+                ['where_raw' => $config['where_raw']]
+            );
+        }
+        if (isset($config['where'])) {
             if (is_string($config['where'])) {
-                $sql .= " WHERE {$config['where']}";
-                $values = $config['values'] ?? [];
-            } else {
-                [$whereSql, $values] = $this->buildWhere($config['where']);
-                $sql .= $whereSql;
+                throw new CTGDBError('INVALID_ARGUMENT',
+                    'String where is no longer supported in read(). Use CTGDBQuery instead.',
+                    ['where' => $config['where']]
+                );
             }
+            [$whereSql, $values] = $this->buildWhere($config['where']);
+            $sql .= $whereSql;
         }
 
         if (isset($config['group'])) {
             $sql .= " GROUP BY " . $this->validateGroupClause($config['group']);
         }
         if (isset($config['having'])) {
-            $sql .= " HAVING {$config['having']}";
+            throw new CTGDBError('INVALID_ARGUMENT',
+                'Raw having is no longer supported. Use CTGDBQuery instead.',
+                ['having' => $config['having']]
+            );
         }
         if (isset($config['order'])) {
             $sql .= " ORDER BY " . $this->validateOrderClause($config['order']);
