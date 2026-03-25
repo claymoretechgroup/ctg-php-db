@@ -62,10 +62,11 @@ CTGTest::init('compose — pipeline with DB at multiple steps')
         ]),
         fn($guitars, $db) => [
             'guitars' => $guitars,
-            'pickups' => $db->join(['guitars', 'pickups'], [
-                'on' => [['guitars.id' => 'pickups.guitar_id']],
-                'columns' => ['guitars.id as guitar_id', 'pickups.make as pickup_make']
-            ])
+            'pickups' => $db->read(
+                CTGDBQuery::from('guitars')
+                    ->join('pickups', 'inner', ['guitars.id' => 'pickups.guitar_id'])
+                    ->columns('guitars.id as guitar_id', 'pickups.make as pickup_make')
+            )
         ],
         fn($data, $_) => [
             'guitar_count' => count($data['guitars']),
@@ -151,10 +152,11 @@ CTGTest::init('compose + CTGFnprog predicate composition')
 CTGTest::init('compose + CTGFnprog aggregation')
     ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
     ->stage('build and execute', fn($db) => $db->compose([
-        fn($_, $db) => $db->join(['guitars', 'pickups'], [
-            'on' => [['guitars.id' => 'pickups.guitar_id']],
-            'columns' => ['guitars.make', 'pickups.type']
-        ]),
+        fn($_, $db) => $db->read(
+            CTGDBQuery::from('guitars')
+                ->join('pickups', 'inner', ['guitars.id' => 'pickups.guitar_id'])
+                ->columns('guitars.make', 'pickups.type')
+        ),
         fn($rows, $_) => [
             'total_pickups' => CTGFnprog::count()($rows),
             'by_type' => CTGFnprog::pipe([

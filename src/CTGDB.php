@@ -251,66 +251,6 @@ class CTGDB {
         ]);
     }
 
-    // :: STRING, ARRAY -> ARRAY
-    // Build a reusable filter with operator support
-    public function filter(string $table, array $conditions): array {
-        $parts = [];
-        $values = [];
-
-        foreach ($conditions as $col => $condition) {
-            $quotedCol = $this->validateIdentifier($col);
-            $op = $condition['op'] ?? '=';
-            $op = $this->validateOperator($op);
-            $type = $condition['type'];
-            $val = $condition['value'];
-
-            if ($op === 'IN' || $op === 'NOT IN') {
-                $placeholders = implode(',', array_fill(0, count($val), '?'));
-                $parts[] = "{$quotedCol} {$op} ({$placeholders})";
-                foreach ($val as $v) {
-                    $values[] = ['type' => $type, 'value' => $v];
-                }
-            } elseif ($op === 'IS' || $op === 'IS NOT') {
-                $parts[] = "{$quotedCol} {$op} NULL";
-            } elseif ($op === 'BETWEEN') {
-                $parts[] = "{$quotedCol} BETWEEN ? AND ?";
-                $values[] = ['type' => $type, 'value' => $val[0]];
-                $values[] = ['type' => $type, 'value' => $val[1]];
-            } else {
-                $parts[] = "{$quotedCol} {$op} ?";
-                $values[] = ['type' => $type, 'value' => $val];
-            }
-        }
-
-        return [
-            'table' => $table,
-            'where' => implode(' AND ', $parts),
-            'values' => $values,
-        ];
-    }
-
-    // :: STRING|ARRAY, ARRAY, ?(ARRAY, MIXED -> MIXED), MIXED -> MIXED
-    // Inner join shortcut — delegates to read() with join => 'inner'
-    public function join(
-        string|array $tables,
-        array        $config = [],
-        ?callable    $fn = null,
-        mixed        $accumulator = []
-    ): mixed {
-        return $this->read($tables, array_merge($config, ['join' => 'inner']), $fn, $accumulator);
-    }
-
-    // :: STRING|ARRAY, ARRAY, ?(ARRAY, MIXED -> MIXED), MIXED -> MIXED
-    // Left join shortcut — delegates to read() with join => 'left'
-    public function leftJoin(
-        string|array $tables,
-        array        $config = [],
-        ?callable    $fn = null,
-        mixed        $accumulator = []
-    ): mixed {
-        return $this->read($tables, array_merge($config, ['join' => 'left']), $fn, $accumulator);
-    }
-
     // :: STRING|ARRAY|ctgdbQuery, ARRAY, ?(ARRAY, MIXED -> MIXED), MIXED -> ARRAY
     // Paginate any result set with metadata
     public function paginate(
