@@ -720,10 +720,10 @@ $result = $db->paginate(
 ### Signature
 
 ```php
-// :: STRING|ARRAY|ctgdbQuery, ARRAY, ?(ARRAY, MIXED -> MIXED), MIXED -> ARRAY
+// :: STRING|ctgdbQuery, ARRAY, ?(ARRAY, MIXED -> MIXED), MIXED -> ARRAY
 // Paginate any result set with metadata
 public function paginate(
-    string|array|CTGDBQuery $source,
+    string|CTGDBQuery $source,
     array                   $config = [],
     ?callable               $fn = null,
     mixed                   $accumulator = []
@@ -855,7 +855,7 @@ The `where` config in `read()` and other CRUD methods accepts two forms:
 ```
 
 **String + values** — raw WHERE clause with explicit parameter binding
-(**deprecated** — use `CTGDBQuery::from()->where()`):
+(**removed** — use `CTGDBQuery::from()->where()`):
 
 ```php
 'where' => 'make = ? AND year_purchased > ?',

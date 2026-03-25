@@ -190,11 +190,11 @@ $page1 = $db->paginate($query, ['sort' => 'model', 'page' => 1]);
 $page2 = $db->paginate($query, ['page' => 2]);
 ```
 
-Builds a reusable set of WHERE conditions with operator support.
-Returns a plain array with `table`, `where`, and `values` keys. The
-result can be passed to `paginate()`, composed with `read()` via
-`where_raw`, or unpacked for use with `run()`. Validates column names
-and operators. All conditions are AND-joined.
+**(Removed)** — use `CTGDBQuery::from()->where()` instead.
+
+Previously built reusable WHERE conditions. This functionality is now
+handled by `CTGDBQuery` which provides the same operator support with
+safe-by-default query construction.
 
 Supported operators: `=`, `>`, `<`, `>=`, `<=`, `!=`, `LIKE`,
 `NOT LIKE`, `IN`, `NOT IN`, `IS`, `IS NOT`, `BETWEEN`.
@@ -248,14 +248,17 @@ $db->leftJoin(['guitars', 'pickups'], [
 ]);
 ```
 
-### ctgdb.paginate :: STRING|ARRAY|ctgdbQuery, ARRAY, ?(ARRAY, MIXED -> MIXED), MIXED -> ARRAY
+### ctgdb.paginate :: STRING|ctgdbQuery, ARRAY, ?(ARRAY, MIXED -> MIXED), MIXED -> ARRAY
 
-Paginates any result set. Source can be a table name, a `CTGDBQuery`
-instance, a filter result, a join query (from `as_query`), or a raw
-query array. Runs a count query and a data query, returning `data` and
+Paginates any result set. Source is a `CTGDBQuery` instance or a table
+name string. Runs a count query and a data query, returning `data` and
 `pagination` metadata. The `total` config option skips the count query
 when the total is already known. The fold function applies to `data`
 only — pagination metadata is always present.
+
+When `$source` is a `CTGDBQuery` and `sort`/`order` are provided in
+config, they **replace** (not append to) any existing ORDER BY on the
+query.
 
 **Preferred: CTGDBQuery**
 

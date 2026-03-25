@@ -335,7 +335,7 @@ class CTGDB {
 
             $query = clone $source;
             if ($sort !== null) {
-                $query->orderBy($sort, $order);
+                $query->resetOrderBy()->orderBy($sort, $order);
             }
             $query->page($page, $perPage);
 
@@ -607,6 +607,12 @@ class CTGDB {
         $joinClauses = [];
 
         if (is_array($joinType) && isset($joinType[0]['type'])) {
+            if (count($joinType) !== count($tables)) {
+                throw new CTGDBError('INVALID_ARGUMENT',
+                    'Join definitions count must match joined tables count',
+                    ['join_count' => count($joinType), 'table_count' => count($tables)]
+                );
+            }
             foreach ($joinType as $i => $joinDef) {
                 $jType = $this->validateJoinType($joinDef['type']);
                 $jTable = $this->validateIdentifier($tables[$i]);

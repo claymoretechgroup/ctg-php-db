@@ -108,6 +108,13 @@ class CTGDBQuery {
         return $this;
     }
 
+    // :: VOID -> $this
+    // Clear all ORDER BY columns
+    public function resetOrderBy(): static {
+        $this->_orderBy = [];
+        return $this;
+    }
+
     // :: STRING, STRING -> $this
     // Add an ORDER BY column (appends to existing order)
     public function orderBy(
