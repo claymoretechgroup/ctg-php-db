@@ -516,6 +516,75 @@ CTGTest::init('validate — missing on condition for join via CTGDBQuery')
     ->assert('throws INVALID_ARGUMENT', fn($r) => $r, 'INVALID_ARGUMENT')
     ->start(null, $config);
 
+// ── Legacy raw SQL paths rejected ─────────────────────────────────
+
+CTGTest::init('validate — string where in read() throws INVALID_ARGUMENT')
+    ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
+    ->stage('attempt', function($db) {
+        try {
+            $db->read('guitars', ['where' => 'make = ?', 'values' => [['type' => 'str', 'value' => 'Fender']]]);
+            return 'no exception';
+        } catch (CTGDBError $e) {
+            return $e->type;
+        }
+    })
+    ->assert('throws INVALID_ARGUMENT', fn($r) => $r, 'INVALID_ARGUMENT')
+    ->start(null, $config);
+
+CTGTest::init('validate — where_raw in join throws INVALID_ARGUMENT')
+    ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
+    ->stage('attempt', function($db) {
+        try {
+            $db->read(['guitars', 'pickups'], [
+                'join' => 'inner',
+                'on' => [['guitars.id' => 'pickups.guitar_id']],
+                'where_raw' => ['where' => 'guitars.make = ?', 'values' => [['type' => 'str', 'value' => 'Fender']]]
+            ]);
+            return 'no exception';
+        } catch (CTGDBError $e) {
+            return $e->type;
+        }
+    })
+    ->assert('throws INVALID_ARGUMENT', fn($r) => $r, 'INVALID_ARGUMENT')
+    ->start(null, $config);
+
+CTGTest::init('validate — string where in join throws INVALID_ARGUMENT')
+    ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
+    ->stage('attempt', function($db) {
+        try {
+            $db->read(['guitars', 'pickups'], [
+                'join' => 'inner',
+                'on' => [['guitars.id' => 'pickups.guitar_id']],
+                'where' => 'guitars.make = ?',
+                'values' => [['type' => 'str', 'value' => 'Fender']]
+            ]);
+            return 'no exception';
+        } catch (CTGDBError $e) {
+            return $e->type;
+        }
+    })
+    ->assert('throws INVALID_ARGUMENT', fn($r) => $r, 'INVALID_ARGUMENT')
+    ->start(null, $config);
+
+CTGTest::init('validate — raw having in join throws INVALID_ARGUMENT')
+    ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
+    ->stage('attempt', function($db) {
+        try {
+            $db->read(['guitars', 'pickups'], [
+                'join' => 'inner',
+                'on' => [['guitars.id' => 'pickups.guitar_id']],
+                'where' => ['guitars.make' => ['type' => 'str', 'value' => 'Fender']],
+                'group' => 'guitars.id',
+                'having' => 'COUNT(*) > 1'
+            ]);
+            return 'no exception';
+        } catch (CTGDBError $e) {
+            return $e->type;
+        }
+    })
+    ->assert('throws INVALID_ARGUMENT', fn($r) => $r, 'INVALID_ARGUMENT')
+    ->start(null, $config);
+
 CTGTest::init('validate — paginate clamps negative page to 1')
     ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
     ->stage('execute', fn($db) => $db->paginate('guitars', [

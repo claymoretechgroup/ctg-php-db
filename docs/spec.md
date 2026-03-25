@@ -452,8 +452,8 @@ $db->read(['articles', 'categories', 'users'], [
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `columns` | `array` | `['*']` | Columns to select |
-| `where` | `array\|string` | `[]` | WHERE conditions (see WHERE Clause Behavior). **String form deprecated** — use `CTGDBQuery::from()->where()` |
-| `values` | `array` | `[]` | Bound values when `where` is a string. **Deprecated with string `where`** |
+| `where` | `array` | `[]` | WHERE conditions (associative array only). String form removed — use `CTGDBQuery` |
+| `values` | — | — | Removed (was used with string `where`) |
 | `order` | `string` | `null` | ORDER BY clause |
 | `limit` | `int` | `null` | Max rows to return |
 
@@ -463,10 +463,10 @@ $db->read(['articles', 'categories', 'users'], [
 |-----|------|---------|-------------|
 | `join` | `string\|array` | *required* | Join type(s) |
 | `on` | `array` | *required* | Join conditions |
-| `where_raw` | `array` | `null` | A filter result to use as WHERE clause. **Deprecated** — use `CTGDBQuery` |
+| `where_raw` | — | — | Removed — use `CTGDBQuery` |
 | `group` | `string` | `null` | GROUP BY clause |
-| `having` | `string` | `null` | HAVING clause (use with `group`) |
-| `as_query` | `bool` | `false` | Return query array instead of executing. **Deprecated** — use `CTGDBQuery` directly |
+| `having` | — | — | Removed — use `CTGDBQuery` |
+| `as_query` | — | — | Removed — use `CTGDBQuery` directly |
 
 **Join type formats:**
 
