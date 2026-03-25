@@ -240,6 +240,34 @@ CTGTest::init('otherwise — not called when on() matches')
     ->assert('on() handler called, not otherwise', fn($r) => $r, 'on')
     ->start(null, $config);
 
+// ── on() — unknown type throws ─────────────────────────────────
+
+CTGTest::init('on — unknown string type throws InvalidArgumentException')
+    ->stage('execute', function($_) {
+        $e = new CTGDBError('DUPLICATE_ENTRY', 'dup');
+        try {
+            $e->on('NONEXISTENT_TYPE', fn($err) => null);
+            return 'no exception';
+        } catch (\InvalidArgumentException $ex) {
+            return 'thrown';
+        }
+    })
+    ->assert('throws', fn($r) => $r, 'thrown')
+    ->start(null, $config);
+
+CTGTest::init('on — unknown integer code throws InvalidArgumentException')
+    ->stage('execute', function($_) {
+        $e = new CTGDBError('DUPLICATE_ENTRY', 'dup');
+        try {
+            $e->on(99999, fn($err) => null);
+            return 'no exception';
+        } catch (\InvalidArgumentException $ex) {
+            return 'thrown';
+        }
+    })
+    ->assert('throws', fn($r) => $r, 'thrown')
+    ->start(null, $config);
+
 // ── Catchable as Exception ──────────────────────────────────────
 
 CTGTest::init('catchable in try/catch')

@@ -45,7 +45,7 @@ Queries that `CTGDBQuery` cannot express use `run()` directly.
 ```php
 namespace CTG\DB;
 
-final class CTGDB
+class CTGDB
 {
     // ─── Construction ──────────────────────────────────────
 
