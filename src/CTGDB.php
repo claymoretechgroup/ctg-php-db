@@ -314,7 +314,7 @@ class CTGDB {
     // :: STRING|ARRAY|ctgdbQuery, ARRAY, ?(ARRAY, MIXED -> MIXED), MIXED -> ARRAY
     // Paginate any result set with metadata
     public function paginate(
-        string|array|CTGDBQuery $source,
+        string|CTGDBQuery $source,
         array                   $config = [],
         ?callable               $fn = null,
         mixed                   $accumulator = []
@@ -364,51 +364,9 @@ class CTGDB {
 
             $data = $this->run(['sql' => $sql, 'values' => []], $fn, $accumulator);
 
-        } elseif (isset($source['table'], $source['where'])) {
-            $table = $this->validateIdentifier($source['table']);
-            $columns = $this->_buildColumnList($config['columns'] ?? ['*'], $source['table']);
-            $where = $source['where'];
-            $values = $source['values'];
-
-            if ($total === null) {
-                $countResult = $this->run([
-                    'sql' => "SELECT COUNT(*) as total FROM {$table} WHERE {$where}",
-                    'values' => $values
-                ]);
-                $total = (int)$countResult[0]['total'];
-            }
-
-            $sql = "SELECT {$columns} FROM {$table} WHERE {$where}";
-            if ($sort !== null) {
-                $sql .= " ORDER BY {$sort} {$order}";
-            }
-            $sql .= " LIMIT {$perPage} OFFSET {$offset}";
-
-            $data = $this->run(['sql' => $sql, 'values' => $values], $fn, $accumulator);
-
-        } elseif (isset($source['sql'])) {
-            $innerSql = $source['sql'];
-            $values = $source['values'] ?? [];
-
-            if ($total === null) {
-                $countResult = $this->run([
-                    'sql' => "SELECT COUNT(*) as total FROM ({$innerSql}) as _paginated",
-                    'values' => $values
-                ]);
-                $total = (int)$countResult[0]['total'];
-            }
-
-            $sql = "SELECT * FROM ({$innerSql}) as _paginated";
-            if ($sort !== null) {
-                $sql .= " ORDER BY {$sort} {$order}";
-            }
-            $sql .= " LIMIT {$perPage} OFFSET {$offset}";
-
-            $data = $this->run(['sql' => $sql, 'values' => $values], $fn, $accumulator);
-
         } else {
             throw new CTGDBError('INVALID_ARGUMENT',
-                'paginate() source must be a table name, filter result, or query array',
+                'paginate() source must be a CTGDBQuery instance or a table name string',
                 ['source' => $source]
             );
         }
@@ -710,10 +668,6 @@ class CTGDB {
         }
         if (isset($config['limit'])) {
             $sql .= " LIMIT " . (int)$config['limit'];
-        }
-
-        if (!empty($config['as_query'])) {
-            return ['sql' => $sql, 'values' => $values];
         }
 
         return $this->run(['sql' => $sql, 'values' => $values], $fn, $accumulator);

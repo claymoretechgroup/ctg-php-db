@@ -398,17 +398,37 @@ CTGTest::init('paginate — CTGDBQuery source')
     ->assert('data has 3 rows', fn($r) => count($r['data']), 3)
     ->start(null, $config);
 
-CTGTest::init('paginate — raw query source')
+CTGTest::init('paginate — raw query array source throws INVALID_ARGUMENT')
     ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
-    ->stage('execute', fn($db) => $db->paginate([
-        'sql' => 'SELECT g.model, p.make as pickup_make
-                  FROM guitars g
-                  INNER JOIN pickups p ON g.id = p.guitar_id
-                  WHERE p.type = ?',
-        'values' => [['type' => 'str', 'value' => 'humbucker']]
-    ], ['sort' => 'model', 'page' => 1, 'per_page' => 5]))
-    ->assert('has data', fn($r) => count($r['data']) > 0, true)
-    ->assert('has pagination', fn($r) => isset($r['pagination']['total_rows']), true)
+    ->stage('attempt', function($db) {
+        try {
+            $db->paginate([
+                'sql' => 'SELECT * FROM guitars',
+                'values' => []
+            ], ['sort' => 'id', 'page' => 1]);
+            return 'no exception';
+        } catch (CTGDBError $e) {
+            return $e->type;
+        }
+    })
+    ->assert('throws INVALID_ARGUMENT', fn($r) => $r, 'INVALID_ARGUMENT')
+    ->start(null, $config);
+
+CTGTest::init('paginate — filter array source throws INVALID_ARGUMENT')
+    ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
+    ->stage('attempt', function($db) {
+        try {
+            $db->paginate([
+                'table' => 'guitars',
+                'where' => 'make = ?',
+                'values' => [['type' => 'str', 'value' => 'Fender']]
+            ], ['sort' => 'id', 'page' => 1]);
+            return 'no exception';
+        } catch (CTGDBError $e) {
+            return $e->type;
+        }
+    })
+    ->assert('throws INVALID_ARGUMENT', fn($r) => $r, 'INVALID_ARGUMENT')
     ->start(null, $config);
 
 CTGTest::init('paginate — CTGDBQuery join source')

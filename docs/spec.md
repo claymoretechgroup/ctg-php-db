@@ -142,7 +142,7 @@ class CTGDB
     // Paginate any result set with metadata
     // CTGDBQuery is the preferred source type
     public function paginate(
-        string|array|CTGDBQuery $source,
+        string|CTGDBQuery $source,
         array                   $config = [],
         ?callable               $fn = null,
         mixed                   $accumulator = []
@@ -509,19 +509,14 @@ Each `on` entry supports multiple conditions for composite keys:
 //            AND orders.tenant_id = users.tenant_id
 ```
 
-**Query mode (as_query):**
+**Join + paginate via CTGDBQuery:**
 
-When `as_query` is true, the method returns the built query array
-instead of executing it. This is used for composition with
-`paginate()`:
+Use `CTGDBQuery` to build join queries for pagination:
 
 ```php
-$query = $db->read(['guitars', 'pickups'], [
-    'join' => 'inner',
-    'on' => [['guitars.id' => 'pickups.guitar_id']],
-    'columns' => ['guitars.*', 'pickups.type as pickup_type'],
-    'as_query' => true
-]);
+$query = CTGDBQuery::from('guitars')
+    ->join('pickups', 'inner', ['guitars.id' => 'pickups.guitar_id'])
+    ->columns('guitars.*', 'pickups.type as pickup_type');
 
 $result = $db->paginate($query, [
     'sort' => 'guitars.make',
@@ -546,19 +541,15 @@ $pickupsByGuitar = $db->read(['guitars', 'pickups'], [
 // ['GRX20L' => ['USA Jackson', 'Seymour Duncan'], ...]
 ```
 
-**Composing with filter via where_raw:**
+**Composing join + filter via CTGDBQuery:**
 
 ```php
-$filter = $db->filter('guitars', [
-    'year_purchased' => ['type' => 'int', 'value' => 2020, 'op' => '>=']
-]);
-
-$result = $db->read(['guitars', 'pickups'], [
-    'join' => 'inner',
-    'on' => [['guitars.id' => 'pickups.guitar_id']],
-    'columns' => ['guitars.model', 'pickups.type'],
-    'where_raw' => $filter
-]);
+$result = $db->read(
+    CTGDBQuery::from('guitars')
+        ->join('pickups', 'inner', ['guitars.id' => 'pickups.guitar_id'])
+        ->columns('guitars.model', 'pickups.type')
+        ->where('guitars.year_purchased', '>=', 2020, 'int')
+);
 ```
 
 ### update()
@@ -611,9 +602,11 @@ $affected = $db->delete('pickups', [
 public function filter(string $table, array $conditions): array;
 ```
 
-Builds a reusable set of WHERE conditions with support for comparison
-operators beyond `=`. Returns a data structure that `paginate()` and
-`read()` (via `where_raw`) can consume.
+**Removed** — use `CTGDBQuery::from()->where()` instead.
+
+Previously built reusable WHERE conditions. This functionality is now
+handled by `CTGDBQuery` which provides the same operator support with
+safe-by-default query construction.
 
 ### Condition Format
 
@@ -707,14 +700,13 @@ $db->join(['guitars', 'pickups'], [
     'columns' => ['guitars.model', 'pickups.make as pickup_make']
 ]);
 
-// All left joins, with as_query for pagination
-$query = $db->leftJoin(['guitars', 'pickups'], [
-    'on' => [['guitars.id' => 'pickups.guitar_id']],
-    'columns' => ['guitars.*', 'pickups.type as pickup_type'],
-    'as_query' => true
-]);
-
-$result = $db->paginate($query, ['sort' => 'guitars.make', 'page' => 1]);
+// Left join via CTGDBQuery (preferred)
+$result = $db->paginate(
+    CTGDBQuery::from('guitars')
+        ->join('pickups', 'left', ['guitars.id' => 'pickups.guitar_id'])
+        ->columns('guitars.*', 'pickups.type as pickup_type'),
+    ['sort' => 'guitars.make', 'page' => 1]
+);
 ```
 
 **When to use which:**
@@ -740,10 +732,10 @@ public function paginate(
 
 ### Source Types
 
-`$source` accepts five forms. `CTGDBQuery` is the preferred source type:
+`$source` accepts two forms:
 
 ```php
-// 1. CTGDBQuery — preferred source (safe-by-default)
+// 1. CTGDBQuery — the default, safe path
 $query = CTGDBQuery::from('guitars')
     ->join('pickups', 'inner', ['guitars.id' => 'pickups.guitar_id'])
     ->columns('guitars.model', 'pickups.type as pickup_type')
@@ -755,40 +747,17 @@ $result = $db->paginate($query, [
     'per_page' => 10
 ]);
 
-// 2. Table name — paginate all rows
+// 2. Table name — paginate all rows from a single table
 $result = $db->paginate('guitars', [
     'sort' => 'year_purchased',
     'order' => 'DESC',
     'page' => 1
 ]);
-
-// 3. Filter result — paginate filtered rows (deprecated, use CTGDBQuery)
-$filter = $db->filter('guitars', [
-    'make' => ['type' => 'str', 'value' => 'Fender']
-]);
-$result = $db->paginate($filter, [
-    'sort' => 'model',
-    'page' => 1,
-    'per_page' => 5
-]);
-
-// 4. Join query — from read/join/leftJoin with as_query (deprecated, use CTGDBQuery)
-$query = $db->join(['guitars', 'pickups'], [
-    'on' => [['guitars.id' => 'pickups.guitar_id']],
-    'columns' => ['guitars.model', 'pickups.type'],
-    'as_query' => true
-]);
-$result = $db->paginate($query, ['sort' => 'guitars.model', 'page' => 1]);
-
-// 5. Raw query array — paginate any arbitrary SQL
-$result = $db->paginate([
-    'sql' => 'SELECT g.model, p.make as pickup_make
-              FROM guitars g
-              INNER JOIN pickups p ON g.id = p.guitar_id
-              WHERE g.year_purchased > ?',
-    'values' => [['type' => 'int', 'value' => 2015]]
-], ['sort' => 'g.model', 'page' => 1]);
 ```
+
+Array sources (filter results, raw query arrays, `as_query` output) are
+no longer accepted. Use `CTGDBQuery` for filtered/joined pagination, or
+`run()` directly for queries that `CTGDBQuery` cannot express.
 
 ### Config Options
 
