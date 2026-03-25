@@ -1078,33 +1078,62 @@ CTGDBError::lookup('NONEXISTENT');      // null
 
 ### How the Library Throws CTGDBError
 
+Error classification uses driver error codes (`errorInfo[1]`) as the
+primary discriminant, SQLSTATE as a fallback grouping, and message text
+only as a last resort. This ensures classification is robust across
+driver versions and server locales.
+
 ```php
 // Connection failures (in constructor)
+// Uses errorInfo[1] driver codes and SQLSTATE for classification
 try {
     $this->_pdo = new PDO($dsn, $username, $password, $options);
 } catch (\PDOException $e) {
-    throw new CTGDBError('CONNECTION_FAILED', $e->getMessage(), [
+    $info = $e->errorInfo ?? [null, null, null];
+    $driverCode = $info[1] ?? null;
+    $sqlstate = $info[0] ?? $e->getCode();
+
+    $type = match(true) {
+        in_array($driverCode, [1045, 1044], true) => 'AUTH_FAILED',
+        $sqlstate === '28000'                      => 'AUTH_FAILED',
+        $driverCode === 2013                       => 'CONNECTION_TIMEOUT',
+        in_array($driverCode, [2002, 2003], true)
+            && str_contains($msg, 'timed out')     => 'CONNECTION_TIMEOUT',
+        default                                    => 'CONNECTION_FAILED',
+    };
+    throw new CTGDBError($type, $e->getMessage(), [
         'host' => $host,
         'database' => $database,
+        'sqlstate' => $sqlstate,
+        'driver_code' => $driverCode,
         'original' => $e
     ]);
 }
 
 // Query execution (in run)
+// Uses driver codes for precise classification, SQLSTATE as fallback
 try {
     $stmt->execute();
 } catch (\PDOException $e) {
-    $code = $e->getCode();
+    $info = $e->errorInfo ?? [null, null, null];
+    $driverCode = $info[1] ?? null;
+    $sqlstate = $info[0] ?? (string)$e->getCode();
+
     $type = match(true) {
-        $code == 23000 && str_contains($e->getMessage(), 'Duplicate')
+        in_array($driverCode, [1062, 1586], true)
             => 'DUPLICATE_ENTRY',
-        $code == 23000
+        in_array($driverCode, [1451, 1452, 1216, 1217, 1048, 3819, 4025], true)
             => 'CONSTRAINT_VIOLATION',
+        $sqlstate === '23000'
+            => 'CONSTRAINT_VIOLATION',
+        in_array($driverCode, [2006, 2013], true)
+            => 'CONNECTION_FAILED',
         default
             => 'QUERY_FAILED',
     };
     throw new CTGDBError($type, $e->getMessage(), [
-        'sqlstate' => $code,
+        'sqlstate' => $sqlstate,
+        'driver_code' => $driverCode,
         'query' => $sql,
         'original' => $e
     ]);

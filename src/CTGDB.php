@@ -39,14 +39,26 @@ class CTGDB {
             $this->_pdo = new \PDO($dsn, $username, $password, $pdoOptions);
         } catch (\PDOException $e) {
             $msg = $e->getMessage();
+            $info = $e->errorInfo ?? [null, null, null];
+            $driverCode = $info[1] ?? null;
+            $sqlstate = $info[0] ?? $e->getCode();
+
             $type = match(true) {
-                str_contains($msg, 'Access denied') => 'AUTH_FAILED',
-                str_contains($msg, 'timed out')     => 'CONNECTION_TIMEOUT',
-                default                              => 'CONNECTION_FAILED',
+                // Auth: driver codes 1045 (bad password), 1044 (no DB privilege)
+                in_array($driverCode, [1045, 1044], true) => 'AUTH_FAILED',
+                $sqlstate === '28000'                      => 'AUTH_FAILED',
+                // Timeout: driver code 2013 (lost connection), or 2002/2003 with timeout message
+                $driverCode === 2013                       => 'CONNECTION_TIMEOUT',
+                in_array($driverCode, [2002, 2003], true)
+                    && str_contains($msg, 'timed out')     => 'CONNECTION_TIMEOUT',
+                // Everything else is a connection failure
+                default                                    => 'CONNECTION_FAILED',
             };
             throw new CTGDBError($type, $msg, [
                 'host' => $host,
                 'database' => $database,
+                'sqlstate' => $sqlstate,
+                'driver_code' => $driverCode,
                 'original' => $e
             ]);
         }
@@ -84,17 +96,29 @@ class CTGDB {
             $this->_bindValues($stmt, $values);
             $stmt->execute();
         } catch (\PDOException $e) {
-            $code = $e->getCode();
+            $info = $e->errorInfo ?? [null, null, null];
+            $driverCode = $info[1] ?? null;
+            $sqlstate = $info[0] ?? (string)$e->getCode();
+
             $type = match(true) {
-                $code == 23000 && str_contains($e->getMessage(), 'Duplicate')
+                // Duplicate entry: driver codes 1062, 1586
+                in_array($driverCode, [1062, 1586], true)
                     => 'DUPLICATE_ENTRY',
-                $code == 23000
+                // Constraint violation: FK (1451/1452/1216/1217), NOT NULL (1048), CHECK (3819/4025)
+                in_array($driverCode, [1451, 1452, 1216, 1217, 1048, 3819, 4025], true)
                     => 'CONSTRAINT_VIOLATION',
+                // SQLSTATE fallback for any integrity constraint violation
+                $sqlstate === '23000'
+                    => 'CONSTRAINT_VIOLATION',
+                // Connection lost mid-query
+                in_array($driverCode, [2006, 2013], true)
+                    => 'CONNECTION_FAILED',
                 default
                     => 'QUERY_FAILED',
             };
             throw new CTGDBError($type, $e->getMessage(), [
-                'sqlstate' => $code,
+                'sqlstate' => $sqlstate,
+                'driver_code' => $driverCode,
                 'query' => $sql,
                 'original' => $e
             ]);
