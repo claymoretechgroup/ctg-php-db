@@ -28,6 +28,18 @@ statements. All identifiers are validated before interpolation.
 
 ## Install
 
+Add the GitHub repository to your `composer.json`:
+
+```json
+{
+    "repositories": [
+        { "type": "vcs", "url": "https://github.com/claymoretechgroup/ctg-php-db" }
+    ]
+}
+```
+
+Then require the package:
+
 ```
 composer require ctg/php-db
 ```
