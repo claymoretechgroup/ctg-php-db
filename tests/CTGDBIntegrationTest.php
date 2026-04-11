@@ -1,18 +1,20 @@
 <?php
 declare(strict_types=1);
 
-require_once __DIR__ . '/../vendor/autoload.php';
 
 use CTG\Test\CTGTest;
+use CTG\Test\CTGTestState;
+use CTG\Test\Predicates\CTGTestPredicates;
 use CTG\DB\CTGDB;
 use CTG\DB\CTGDBError;
 use CTG\DB\CTGDBQuery;
 use CTG\FnProg\CTGFnprog;
 
+$pipelines = [];
+
 // Integration tests — compose pipelines, CTGFnprog interop, end-to-end workflows
 // Requires a running MariaDB with guitars/pickups test data
 
-$config = ['output' => 'console'];
 
 $dbHost = getenv('DB_HOST') ?: 'db';
 $dbName = getenv('DB_NAME') ?: 'ctg_staging';
@@ -21,42 +23,42 @@ $dbPass = getenv('DB_PASSWORD') ?: 'devpass_change_me';
 
 // ── compose() — basic pipeline ──────────────────────────────────
 
-CTGTest::init('compose — basic read pipeline')
-    ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
-    ->stage('build', fn($db) => [
-        'db' => $db,
-        'pipeline' => $db->compose([
+$pipelines[] = CTGTest::init('compose — basic read pipeline')
+    ->stage('connect', fn(CTGTestState $state) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
+    ->stage('build', fn(CTGTestState $state) => [
+        'db' => $state->getSubject(),
+        'pipeline' => $state->getSubject()->compose([
             fn($_, $db) => $db->read('guitars'),
         ])
     ])
-    ->stage('execute', fn($ctx) => $ctx['pipeline']())
-    ->assert('returns 9 guitars', fn($r) => count($r), 9)
-    ->start(null, $config);
+    ->stage('execute', fn(CTGTestState $state) => $state->getSubject()['pipeline']())
+    ->assert('returns 9 guitars', fn(CTGTestState $state) => count($state->getSubject()), CTGTestPredicates::equals(9))
+    ;
 
-CTGTest::init('compose — multi-step pipeline')
-    ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
-    ->stage('build and execute', fn($db) => $db->compose([
+$pipelines[] = CTGTest::init('compose — multi-step pipeline')
+    ->stage('connect', fn(CTGTestState $state) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
+    ->stage('build and execute', fn(CTGTestState $state) => $state->getSubject()->compose([
         fn($_, $db) => $db->read('guitars'),
         fn($guitars, $_) => array_filter($guitars, fn($g) => $g['make'] === 'Fender'),
         fn($fenders, $_) => count($fenders),
     ])())
-    ->assert('counted 3 Fenders', fn($r) => $r, 3)
-    ->start(null, $config);
+    ->assert('counted 3 Fenders', fn(CTGTestState $state) => $state->getSubject(), CTGTestPredicates::equals(3))
+    ;
 
-CTGTest::init('compose — pipeline with initial value')
-    ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
-    ->stage('build and execute', fn($db) => $db->compose([
+$pipelines[] = CTGTest::init('compose — pipeline with initial value')
+    ->stage('connect', fn(CTGTestState $state) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
+    ->stage('build and execute', fn(CTGTestState $state) => $state->getSubject()->compose([
         fn($make, $db) => $db->read('guitars', [
             'where' => ['make' => ['type' => 'str', 'value' => $make]]
         ]),
         fn($guitars, $_) => count($guitars),
     ])('Fender'))
-    ->assert('counted 3 Fenders', fn($r) => $r, 3)
-    ->start(null, $config);
+    ->assert('counted 3 Fenders', fn(CTGTestState $state) => $state->getSubject(), CTGTestPredicates::equals(3))
+    ;
 
-CTGTest::init('compose — pipeline with DB at multiple steps')
-    ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
-    ->stage('build and execute', fn($db) => $db->compose([
+$pipelines[] = CTGTest::init('compose — pipeline with DB at multiple steps')
+    ->stage('connect', fn(CTGTestState $state) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
+    ->stage('build and execute', fn(CTGTestState $state) => $state->getSubject()->compose([
         fn($_, $db) => $db->read('guitars', [
             'columns' => ['id', 'make', 'model']
         ]),
@@ -73,15 +75,15 @@ CTGTest::init('compose — pipeline with DB at multiple steps')
             'pickup_count' => count($data['pickups']),
         ],
     ])())
-    ->assert('guitar_count is 9', fn($r) => $r['guitar_count'], 9)
-    ->assert('pickup_count > 0', fn($r) => $r['pickup_count'] > 0, true)
-    ->start(null, $config);
+    ->assert('guitar_count is 9', fn(CTGTestState $state) => $state->getSubject()['guitar_count'], CTGTestPredicates::equals(9))
+    ->assert('pickup_count > 0', fn(CTGTestState $state) => $state->getSubject()['pickup_count'] > 0, CTGTestPredicates::isTrue())
+    ;
 
 // ── compose() with CTGFnprog ────────────────────────────────────
 
-CTGTest::init('compose + CTGFnprog::pipe — pure transform')
-    ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
-    ->stage('build and execute', fn($db) => $db->compose([
+$pipelines[] = CTGTest::init('compose + CTGFnprog::pipe — pure transform')
+    ->stage('connect', fn(CTGTestState $state) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
+    ->stage('build and execute', fn(CTGTestState $state) => $state->getSubject()->compose([
         fn($_, $db) => $db->read('guitars'),
         fn($guitars, $_) => CTGFnprog::pipe([
             CTGFnprog::filter(fn($g) => (int)$g['year_purchased'] >= 2020),
@@ -89,13 +91,13 @@ CTGTest::init('compose + CTGFnprog::pipe — pure transform')
             CTGFnprog::pluck('make'),
         ])($guitars),
     ])())
-    ->assert('returns array', fn($r) => is_array($r), true)
-    ->assert('first is most recent', fn($r) => $r[0], 'Schecter')
-    ->start(null, $config);
+    ->assert('returns array', fn(CTGTestState $state) => is_array($state->getSubject()), CTGTestPredicates::isTrue())
+    ->assert('first is most recent', fn(CTGTestState $state) => $state->getSubject()[0], CTGTestPredicates::equals('Schecter'))
+    ;
 
-CTGTest::init('compose + CTGFnprog::pick — select fields')
-    ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
-    ->stage('build and execute', fn($db) => $db->compose([
+$pipelines[] = CTGTest::init('compose + CTGFnprog::pick — select fields')
+    ->stage('connect', fn(CTGTestState $state) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
+    ->stage('build and execute', fn(CTGTestState $state) => $state->getSubject()->compose([
         fn($_, $db) => $db->read('guitars'),
         fn($guitars, $_) => CTGFnprog::pipe([
             CTGFnprog::pick(['make', 'model']),
@@ -103,24 +105,24 @@ CTGTest::init('compose + CTGFnprog::pick — select fields')
             CTGFnprog::take(3),
         ])($guitars),
     ])())
-    ->assert('returns 3 rows', fn($r) => count($r), 3)
-    ->assert('has only make and model', fn($r) => array_keys($r[0]), ['make', 'model'])
-    ->start(null, $config);
+    ->assert('returns 3 rows', fn(CTGTestState $state) => count($state->getSubject()), CTGTestPredicates::equals(3))
+    ->assert('has only make and model', fn(CTGTestState $state) => array_keys($state->getSubject()[0]), CTGTestPredicates::equals(['make', 'model']))
+    ;
 
-CTGTest::init('compose + CTGFnprog::groupBy — group results')
-    ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
-    ->stage('build and execute', fn($db) => $db->compose([
+$pipelines[] = CTGTest::init('compose + CTGFnprog::groupBy — group results')
+    ->stage('connect', fn(CTGTestState $state) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
+    ->stage('build and execute', fn(CTGTestState $state) => $state->getSubject()->compose([
         fn($_, $db) => $db->read('guitars'),
         fn($guitars, $_) => CTGFnprog::groupBy('make')($guitars),
     ])())
-    ->assert('has Fender group', fn($r) => count($r['Fender']), 3)
-    ->assert('has Ibanez group', fn($r) => count($r['Ibanez']), 2)
-    ->assert('has Gibson group', fn($r) => count($r['Gibson']), 1)
-    ->start(null, $config);
+    ->assert('has Fender group', fn(CTGTestState $state) => count($state->getSubject()['Fender']), CTGTestPredicates::equals(3))
+    ->assert('has Ibanez group', fn(CTGTestState $state) => count($state->getSubject()['Ibanez']), CTGTestPredicates::equals(2))
+    ->assert('has Gibson group', fn(CTGTestState $state) => count($state->getSubject()['Gibson']), CTGTestPredicates::equals(1))
+    ;
 
-CTGTest::init('compose + CTGFnprog::withField — computed fields')
-    ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
-    ->stage('build and execute', fn($db) => $db->compose([
+$pipelines[] = CTGTest::init('compose + CTGFnprog::withField — computed fields')
+    ->stage('connect', fn(CTGTestState $state) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
+    ->stage('build and execute', fn(CTGTestState $state) => $state->getSubject()->compose([
         fn($_, $db) => $db->read('guitars', [
             'where' => ['id' => ['type' => 'int', 'value' => 4]]
         ]),
@@ -128,12 +130,12 @@ CTGTest::init('compose + CTGFnprog::withField — computed fields')
             CTGFnprog::withField('display', fn($g) => $g['make'] . ' ' . $g['model']),
         ])($guitars),
     ])())
-    ->assert('computed display field', fn($r) => $r[0]['display'], 'Fender Telecaster MOD Shop')
-    ->start(null, $config);
+    ->assert('computed display field', fn(CTGTestState $state) => $state->getSubject()[0]['display'], CTGTestPredicates::equals('Fender Telecaster MOD Shop'))
+    ;
 
-CTGTest::init('compose + CTGFnprog predicate composition')
-    ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
-    ->stage('build and execute', fn($db) => $db->compose([
+$pipelines[] = CTGTest::init('compose + CTGFnprog predicate composition')
+    ->stage('connect', fn(CTGTestState $state) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
+    ->stage('build and execute', fn(CTGTestState $state) => $state->getSubject()->compose([
         fn($_, $db) => $db->read('guitars'),
         fn($guitars, $_) => CTGFnprog::pipe([
             CTGFnprog::filter(CTGFnprog::all(
@@ -143,15 +145,15 @@ CTGTest::init('compose + CTGFnprog predicate composition')
             CTGFnprog::pluck('make'),
         ])($guitars),
     ])())
-    ->assert('excludes Schecter', fn($r) => !in_array('Schecter', $r), true)
-    ->assert('only post-2020', fn($r) => count($r) > 0, true)
-    ->start(null, $config);
+    ->assert('excludes Schecter', fn(CTGTestState $state) => !in_array('Schecter', $state->getSubject()), CTGTestPredicates::isTrue())
+    ->assert('only post-2020', fn(CTGTestState $state) => count($state->getSubject()) > 0, CTGTestPredicates::isTrue())
+    ;
 
 // ── compose + CTGFnprog aggregation ─────────────────────────────
 
-CTGTest::init('compose + CTGFnprog aggregation')
-    ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
-    ->stage('build and execute', fn($db) => $db->compose([
+$pipelines[] = CTGTest::init('compose + CTGFnprog aggregation')
+    ->stage('connect', fn(CTGTestState $state) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
+    ->stage('build and execute', fn(CTGTestState $state) => $state->getSubject()->compose([
         fn($_, $db) => $db->read(
             CTGDBQuery::from('guitars')
                 ->join('pickups', 'inner', ['guitars.id' => 'pickups.guitar_id'])
@@ -165,16 +167,17 @@ CTGTest::init('compose + CTGFnprog aggregation')
             ])($rows),
         ],
     ])())
-    ->assert('counted pickups', fn($r) => $r['total_pickups'] > 0, true)
-    ->assert('has humbucker count', fn($r) => isset($r['by_type']['humbucker']), true)
-    ->assert('has single_coil count', fn($r) => isset($r['by_type']['single_coil']), true)
-    ->start(null, $config);
+    ->assert('counted pickups', fn(CTGTestState $state) => $state->getSubject()['total_pickups'] > 0, CTGTestPredicates::isTrue())
+    ->assert('has humbucker count', fn(CTGTestState $state) => isset($state->getSubject()['by_type']['humbucker']), CTGTestPredicates::isTrue())
+    ->assert('has single_coil count', fn(CTGTestState $state) => isset($state->getSubject()['by_type']['single_coil']), CTGTestPredicates::isTrue())
+    ;
 
 // ── Composing pipelines from pipelines ──────────────────────────
 
-CTGTest::init('compose — pipelines from pipelines')
-    ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
-    ->stage('build and execute', function($db) {
+$pipelines[] = CTGTest::init('compose — pipelines from pipelines')
+    ->stage('connect', fn(CTGTestState $state) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
+    ->stage('build and execute', function(CTGTestState $state) {
+            $db = $state->getSubject();
         $getGuitars = $db->compose([
             fn($_, $db) => $db->read('guitars'),
         ]);
@@ -190,15 +193,16 @@ CTGTest::init('compose — pipelines from pipelines')
         ]);
         return $fullPipeline();
     })
-    ->assert('returns sorted guitars', fn($r) => $r[0]['make'], 'ESP')
-    ->assert('has only picked fields', fn($r) => array_keys($r[0]), ['make', 'model', 'color'])
-    ->start(null, $config);
+    ->assert('returns sorted guitars', fn(CTGTestState $state) => $state->getSubject()[0]['make'], CTGTestPredicates::equals('ESP'))
+    ->assert('has only picked fields', fn(CTGTestState $state) => array_keys($state->getSubject()[0]), CTGTestPredicates::equals(['make', 'model', 'color']))
+    ;
 
 // ── End-to-end: filter + paginate + transform ───────────────────
 
-CTGTest::init('end-to-end — CTGDBQuery + paginate')
-    ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
-    ->stage('execute', function($db) {
+$pipelines[] = CTGTest::init('end-to-end — CTGDBQuery + paginate')
+    ->stage('connect', fn(CTGTestState $state) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
+    ->stage('execute', function(CTGTestState $state) {
+            $db = $state->getSubject();
         $query = CTGDBQuery::from('guitars')
             ->where('year_purchased', '>=', 2015, 'int');
         return $db->paginate($query, [
@@ -208,14 +212,15 @@ CTGTest::init('end-to-end — CTGDBQuery + paginate')
             'per_page' => 3
         ]);
     })
-    ->assert('has data', fn($r) => count($r['data']) > 0, true)
-    ->assert('has pagination', fn($r) => isset($r['pagination']['total_rows']), true)
-    ->assert('sorted DESC', fn($r) => (int)$r['data'][0]['year_purchased'] >= (int)$r['data'][1]['year_purchased'], true)
-    ->start(null, $config);
+    ->assert('has data', fn(CTGTestState $state) => count($state->getSubject()['data']) > 0, CTGTestPredicates::isTrue())
+    ->assert('has pagination', fn(CTGTestState $state) => isset($state->getSubject()['pagination']['total_rows']), CTGTestPredicates::isTrue())
+    ->assert('sorted DESC', fn(CTGTestState $state) => (int)$state->getSubject()['data'][0]['year_purchased'] >= (int)$state->getSubject()['data'][1]['year_purchased'], CTGTestPredicates::isTrue())
+    ;
 
-CTGTest::init('end-to-end — CTGDBQuery join + paginate')
-    ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
-    ->stage('execute', function($db) {
+$pipelines[] = CTGTest::init('end-to-end — CTGDBQuery join + paginate')
+    ->stage('connect', fn(CTGTestState $state) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
+    ->stage('execute', function(CTGTestState $state) {
+            $db = $state->getSubject();
         $query = CTGDBQuery::from('guitars')
             ->join('pickups', 'inner', ['guitars.id' => 'pickups.guitar_id'])
             ->columns('guitars.make', 'guitars.model', 'pickups.type');
@@ -225,13 +230,14 @@ CTGTest::init('end-to-end — CTGDBQuery join + paginate')
             'per_page' => 5
         ]);
     })
-    ->assert('data has up to 5 rows', fn($r) => count($r['data']) <= 5, true)
-    ->assert('has pagination metadata', fn($r) => $r['pagination']['per_page'], 5)
-    ->start(null, $config);
+    ->assert('data has up to 5 rows', fn(CTGTestState $state) => count($state->getSubject()['data']) <= 5, CTGTestPredicates::isTrue())
+    ->assert('has pagination metadata', fn(CTGTestState $state) => $state->getSubject()['pagination']['per_page'], CTGTestPredicates::equals(5))
+    ;
 
-CTGTest::init('end-to-end — CTGDBQuery join + where')
-    ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
-    ->stage('execute', function($db) {
+$pipelines[] = CTGTest::init('end-to-end — CTGDBQuery join + where')
+    ->stage('connect', fn(CTGTestState $state) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
+    ->stage('execute', function(CTGTestState $state) {
+            $db = $state->getSubject();
         return $db->read(
             CTGDBQuery::from('guitars')
                 ->join('pickups', 'inner', ['guitars.id' => 'pickups.guitar_id'])
@@ -239,68 +245,69 @@ CTGTest::init('end-to-end — CTGDBQuery join + where')
                 ->where('guitars.year_purchased', '>=', 2020, 'int')
         );
     })
-    ->assert('returns rows', fn($r) => count($r) > 0, true)
-    ->assert('has model', fn($r) => isset($r[0]['model']), true)
-    ->start(null, $config);
+    ->assert('returns rows', fn(CTGTestState $state) => count($state->getSubject()) > 0, CTGTestPredicates::isTrue())
+    ->assert('has model', fn(CTGTestState $state) => isset($state->getSubject()[0]['model']), CTGTestPredicates::isTrue())
+    ;
 
 // ── CRUD lifecycle ──────────────────────────────────────────────
 
-CTGTest::init('end-to-end — full CRUD lifecycle')
-    ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
-    ->stage('create', fn($db) => [
-        'db' => $db,
-        'id' => $db->create('guitars', [
+$pipelines[] = CTGTest::init('end-to-end — full CRUD lifecycle')
+    ->stage('connect', fn(CTGTestState $state) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
+    ->stage('create', fn(CTGTestState $state) => [
+        'db' => $state->getSubject(),
+        'id' => $state->getSubject()->create('guitars', [
             'make' => ['type' => 'str', 'value' => 'TestBrand'],
             'model' => ['type' => 'str', 'value' => 'TestModel'],
             'color' => ['type' => 'str', 'value' => 'TestColor'],
             'year_purchased' => ['type' => 'int', 'value' => 2025]
         ])
     ])
-    ->assert('created with id', fn($r) => is_numeric($r['id']), true)
-    ->stage('read back', fn($r) => [
-        'db' => $r['db'],
-        'id' => $r['id'],
-        'row' => $r['db']->read('guitars', [
-            'where' => ['id' => ['type' => 'int', 'value' => (int)$r['id']]]
+    ->assert('created with id', fn(CTGTestState $state) => is_numeric($state->getSubject()['id']), CTGTestPredicates::isTrue())
+    ->stage('read back', fn(CTGTestState $state) => [
+        'db' => $state->getSubject()['db'],
+        'id' => $state->getSubject()['id'],
+        'row' => $state->getSubject()['db']->read('guitars', [
+            'where' => ['id' => ['type' => 'int', 'value' => (int)$state->getSubject()['id']]]
         ])[0]
     ])
-    ->assert('read make', fn($r) => $r['row']['make'], 'TestBrand')
-    ->assert('read model', fn($r) => $r['row']['model'], 'TestModel')
-    ->stage('update', fn($r) => [
-        'db' => $r['db'],
-        'id' => $r['id'],
-        'affected' => $r['db']->update('guitars',
+    ->assert('read make', fn(CTGTestState $state) => $state->getSubject()['row']['make'], CTGTestPredicates::equals('TestBrand'))
+    ->assert('read model', fn(CTGTestState $state) => $state->getSubject()['row']['model'], CTGTestPredicates::equals('TestModel'))
+    ->stage('update', fn(CTGTestState $state) => [
+        'db' => $state->getSubject()['db'],
+        'id' => $state->getSubject()['id'],
+        'affected' => $state->getSubject()['db']->update('guitars',
             ['color' => ['type' => 'str', 'value' => 'UpdatedColor']],
-            ['id' => ['type' => 'int', 'value' => (int)$r['id']]]
+            ['id' => ['type' => 'int', 'value' => (int)$state->getSubject()['id']]]
         )
     ])
-    ->assert('updated 1 row', fn($r) => $r['affected'], 1)
-    ->stage('verify update', fn($r) => [
-        'db' => $r['db'],
-        'id' => $r['id'],
-        'row' => $r['db']->read('guitars', [
-            'where' => ['id' => ['type' => 'int', 'value' => (int)$r['id']]]
+    ->assert('updated 1 row', fn(CTGTestState $state) => $state->getSubject()['affected'], CTGTestPredicates::equals(1))
+    ->stage('verify update', fn(CTGTestState $state) => [
+        'db' => $state->getSubject()['db'],
+        'id' => $state->getSubject()['id'],
+        'row' => $state->getSubject()['db']->read('guitars', [
+            'where' => ['id' => ['type' => 'int', 'value' => (int)$state->getSubject()['id']]]
         ])[0]
     ])
-    ->assert('color updated', fn($r) => $r['row']['color'], 'UpdatedColor')
-    ->stage('delete', fn($r) => [
-        'db' => $r['db'],
-        'affected' => $r['db']->delete('guitars', [
-            'id' => ['type' => 'int', 'value' => (int)$r['id']]
+    ->assert('color updated', fn(CTGTestState $state) => $state->getSubject()['row']['color'], CTGTestPredicates::equals('UpdatedColor'))
+    ->stage('delete', fn(CTGTestState $state) => [
+        'db' => $state->getSubject()['db'],
+        'affected' => $state->getSubject()['db']->delete('guitars', [
+            'id' => ['type' => 'int', 'value' => (int)$state->getSubject()['id']]
         ])
     ])
-    ->assert('deleted 1 row', fn($r) => $r['affected'], 1)
-    ->stage('verify delete', fn($r) => $r['db']->read('guitars', [
+    ->assert('deleted 1 row', fn(CTGTestState $state) => $state->getSubject()['affected'], CTGTestPredicates::equals(1))
+    ->stage('verify delete', fn(CTGTestState $state) => $state->getSubject()['db']->read('guitars', [
         'where' => ['make' => ['type' => 'str', 'value' => 'TestBrand']]
     ]))
-    ->assert('row is gone', fn($r) => count($r), 0)
-    ->start(null, $config);
+    ->assert('row is gone', fn(CTGTestState $state) => count($state->getSubject()), CTGTestPredicates::equals(0))
+    ;
 
 // ── Error handling in pipelines ─────────────────────────────────
 
-CTGTest::init('compose — error propagates from pipeline')
-    ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
-    ->stage('execute', function($db) {
+$pipelines[] = CTGTest::init('compose — error propagates from pipeline')
+    ->stage('connect', fn(CTGTestState $state) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
+    ->stage('execute', function(CTGTestState $state) {
+            $db = $state->getSubject();
         try {
             $pipeline = $db->compose([
                 fn($_, $db) => $db->read('nonexistent_table_xyz'),
@@ -313,5 +320,7 @@ CTGTest::init('compose — error propagates from pipeline')
             return 'other: ' . get_class($e);
         }
     })
-    ->assert('threw CTGDBError', fn($r) => is_string($r) && $r !== 'no exception', true)
-    ->start(null, $config);
+    ->assert('threw CTGDBError', fn(CTGTestState $state) => is_string($state->getSubject()) && $state->getSubject() !== 'no exception', CTGTestPredicates::isTrue())
+    ;
+
+return $pipelines;

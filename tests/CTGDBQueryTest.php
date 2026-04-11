@@ -1,28 +1,30 @@
 <?php
 declare(strict_types=1);
 
-require_once __DIR__ . '/../vendor/autoload.php';
 
 use CTG\Test\CTGTest;
+use CTG\Test\CTGTestState;
+use CTG\Test\Predicates\CTGTestPredicates;
 use CTG\DB\CTGDBQuery;
 use CTG\DB\CTGDBError;
+
+$pipelines = [];
 
 // Unit tests for CTGDBQuery — SQL generation, validation, operator handling
 // These are pure unit tests: no database connection required.
 
-$config = ['output' => 'console'];
 
 // ═══════════════════════════════════════════════════════════════
 // STATIC FACTORY
 // ═══════════════════════════════════════════════════════════════
 
-CTGTest::init('from — returns CTGDBQuery instance')
-    ->stage('create', fn($_) => CTGDBQuery::from('guitars'))
-    ->assert('is CTGDBQuery', fn($q) => $q instanceof CTGDBQuery, true)
-    ->start(null, $config);
+$pipelines[] = CTGTest::init('from — returns CTGDBQuery instance')
+    ->stage('create', fn(CTGTestState $state) => CTGDBQuery::from('guitars'))
+    ->assert('is CTGDBQuery', fn(CTGTestState $state) => $state->getSubject() instanceof CTGDBQuery, CTGTestPredicates::isTrue())
+    ;
 
-CTGTest::init('from — invalid table name throws INVALID_IDENTIFIER')
-    ->stage('attempt', function($_) {
+$pipelines[] = CTGTest::init('from — invalid table name throws INVALID_IDENTIFIER')
+    ->stage('attempt', function(CTGTestState $state) {
         try {
             CTGDBQuery::from('guitars; DROP TABLE guitars;--');
             return 'no exception';
@@ -30,47 +32,47 @@ CTGTest::init('from — invalid table name throws INVALID_IDENTIFIER')
             return $e->type;
         }
     })
-    ->assert('throws INVALID_IDENTIFIER', fn($r) => $r, 'INVALID_IDENTIFIER')
-    ->start(null, $config);
+    ->assert('throws INVALID_IDENTIFIER', fn(CTGTestState $state) => $state->getSubject(), CTGTestPredicates::equals('INVALID_IDENTIFIER'))
+    ;
 
 // ═══════════════════════════════════════════════════════════════
 // BASIC SELECT (toStatement)
 // ═══════════════════════════════════════════════════════════════
 
-CTGTest::init('toStatement — default SELECT *')
-    ->stage('build', fn($_) => CTGDBQuery::from('guitars')->toStatement())
-    ->assert('sql', fn($s) => $s['sql'], 'SELECT * FROM `guitars`')
-    ->assert('values empty', fn($s) => $s['values'], [])
-    ->start(null, $config);
+$pipelines[] = CTGTest::init('toStatement — default SELECT *')
+    ->stage('build', fn(CTGTestState $state) => CTGDBQuery::from('guitars')->toStatement())
+    ->assert('sql', fn(CTGTestState $state) => $state->getSubject()['sql'], CTGTestPredicates::equals('SELECT * FROM `guitars`'))
+    ->assert('values empty', fn(CTGTestState $state) => $state->getSubject()['values'], CTGTestPredicates::equals([]))
+    ;
 
-CTGTest::init('toStatement — specific columns')
-    ->stage('build', fn($_) => CTGDBQuery::from('guitars')->columns('id', 'make', 'model')->toStatement())
-    ->assert('sql', fn($s) => $s['sql'], 'SELECT `id`, `make`, `model` FROM `guitars`')
-    ->assert('values empty', fn($s) => $s['values'], [])
-    ->start(null, $config);
+$pipelines[] = CTGTest::init('toStatement — specific columns')
+    ->stage('build', fn(CTGTestState $state) => CTGDBQuery::from('guitars')->columns('id', 'make', 'model')->toStatement())
+    ->assert('sql', fn(CTGTestState $state) => $state->getSubject()['sql'], CTGTestPredicates::equals('SELECT `id`, `make`, `model` FROM `guitars`'))
+    ->assert('values empty', fn(CTGTestState $state) => $state->getSubject()['values'], CTGTestPredicates::equals([]))
+    ;
 
-CTGTest::init('toStatement — table-qualified columns')
-    ->stage('build', fn($_) => CTGDBQuery::from('guitars')->columns('guitars.id', 'guitars.make')->toStatement())
-    ->assert('sql', fn($s) => $s['sql'], 'SELECT `guitars`.`id`, `guitars`.`make` FROM `guitars`')
-    ->start(null, $config);
+$pipelines[] = CTGTest::init('toStatement — table-qualified columns')
+    ->stage('build', fn(CTGTestState $state) => CTGDBQuery::from('guitars')->columns('guitars.id', 'guitars.make')->toStatement())
+    ->assert('sql', fn(CTGTestState $state) => $state->getSubject()['sql'], CTGTestPredicates::equals('SELECT `guitars`.`id`, `guitars`.`make` FROM `guitars`'))
+    ;
 
-CTGTest::init('toStatement — aliased column')
-    ->stage('build', fn($_) => CTGDBQuery::from('guitars')->columns('guitars.make as guitar_make')->toStatement())
-    ->assert('sql', fn($s) => $s['sql'], 'SELECT `guitars`.`make` as `guitar_make` FROM `guitars`')
-    ->start(null, $config);
+$pipelines[] = CTGTest::init('toStatement — aliased column')
+    ->stage('build', fn(CTGTestState $state) => CTGDBQuery::from('guitars')->columns('guitars.make as guitar_make')->toStatement())
+    ->assert('sql', fn(CTGTestState $state) => $state->getSubject()['sql'], CTGTestPredicates::equals('SELECT `guitars`.`make` as `guitar_make` FROM `guitars`'))
+    ;
 
-CTGTest::init('toStatement — table wildcard')
-    ->stage('build', fn($_) => CTGDBQuery::from('guitars')->columns('guitars.*')->toStatement())
-    ->assert('sql', fn($s) => $s['sql'], 'SELECT `guitars`.* FROM `guitars`')
-    ->start(null, $config);
+$pipelines[] = CTGTest::init('toStatement — table wildcard')
+    ->stage('build', fn(CTGTestState $state) => CTGDBQuery::from('guitars')->columns('guitars.*')->toStatement())
+    ->assert('sql', fn(CTGTestState $state) => $state->getSubject()['sql'], CTGTestPredicates::equals('SELECT `guitars`.* FROM `guitars`'))
+    ;
 
-CTGTest::init('toStatement — global wildcard')
-    ->stage('build', fn($_) => CTGDBQuery::from('guitars')->columns('*')->toStatement())
-    ->assert('sql', fn($s) => $s['sql'], 'SELECT * FROM `guitars`')
-    ->start(null, $config);
+$pipelines[] = CTGTest::init('toStatement — global wildcard')
+    ->stage('build', fn(CTGTestState $state) => CTGDBQuery::from('guitars')->columns('*')->toStatement())
+    ->assert('sql', fn(CTGTestState $state) => $state->getSubject()['sql'], CTGTestPredicates::equals('SELECT * FROM `guitars`'))
+    ;
 
-CTGTest::init('columns — invalid column throws INVALID_IDENTIFIER')
-    ->stage('attempt', function($_) {
+$pipelines[] = CTGTest::init('columns — invalid column throws INVALID_IDENTIFIER')
+    ->stage('attempt', function(CTGTestState $state) {
         try {
             CTGDBQuery::from('guitars')->columns('make; DROP TABLE guitars;--');
             return 'no exception';
@@ -78,133 +80,133 @@ CTGTest::init('columns — invalid column throws INVALID_IDENTIFIER')
             return $e->type;
         }
     })
-    ->assert('throws INVALID_IDENTIFIER', fn($r) => $r, 'INVALID_IDENTIFIER')
-    ->start(null, $config);
+    ->assert('throws INVALID_IDENTIFIER', fn(CTGTestState $state) => $state->getSubject(), CTGTestPredicates::equals('INVALID_IDENTIFIER'))
+    ;
 
 // ═══════════════════════════════════════════════════════════════
 // WHERE CONDITIONS
 // ═══════════════════════════════════════════════════════════════
 
-CTGTest::init('where — single equality')
-    ->stage('build', fn($_) => CTGDBQuery::from('guitars')
+$pipelines[] = CTGTest::init('where — single equality')
+    ->stage('build', fn(CTGTestState $state) => CTGDBQuery::from('guitars')
         ->where('make', '=', 'Fender', 'str')
         ->toStatement())
-    ->assert('sql', fn($s) => $s['sql'], 'SELECT * FROM `guitars` WHERE `make` = ?')
-    ->assert('values', fn($s) => $s['values'], [['type' => 'str', 'value' => 'Fender']])
-    ->start(null, $config);
+    ->assert('sql', fn(CTGTestState $state) => $state->getSubject()['sql'], CTGTestPredicates::equals('SELECT * FROM `guitars` WHERE `make` = ?'))
+    ->assert('values', fn(CTGTestState $state) => $state->getSubject()['values'], CTGTestPredicates::equals([['type' => 'str', 'value' => 'Fender']]))
+    ;
 
-CTGTest::init('where — multiple AND conditions')
-    ->stage('build', fn($_) => CTGDBQuery::from('guitars')
+$pipelines[] = CTGTest::init('where — multiple AND conditions')
+    ->stage('build', fn(CTGTestState $state) => CTGDBQuery::from('guitars')
         ->where('make', '=', 'Fender', 'str')
         ->where('color', '=', 'Sunburst', 'str')
         ->toStatement())
-    ->assert('sql', fn($s) => $s['sql'], 'SELECT * FROM `guitars` WHERE `make` = ? AND `color` = ?')
-    ->assert('values count', fn($s) => count($s['values']), 2)
-    ->assert('first value', fn($s) => $s['values'][0], ['type' => 'str', 'value' => 'Fender'])
-    ->assert('second value', fn($s) => $s['values'][1], ['type' => 'str', 'value' => 'Sunburst'])
-    ->start(null, $config);
+    ->assert('sql', fn(CTGTestState $state) => $state->getSubject()['sql'], CTGTestPredicates::equals('SELECT * FROM `guitars` WHERE `make` = ? AND `color` = ?'))
+    ->assert('values count', fn(CTGTestState $state) => count($state->getSubject()['values']), CTGTestPredicates::equals(2))
+    ->assert('first value', fn(CTGTestState $state) => $state->getSubject()['values'][0], CTGTestPredicates::equals(['type' => 'str', 'value' => 'Fender']))
+    ->assert('second value', fn(CTGTestState $state) => $state->getSubject()['values'][1], CTGTestPredicates::equals(['type' => 'str', 'value' => 'Sunburst']))
+    ;
 
-CTGTest::init('where — same column range')
-    ->stage('build', fn($_) => CTGDBQuery::from('guitars')
+$pipelines[] = CTGTest::init('where — same column range')
+    ->stage('build', fn(CTGTestState $state) => CTGDBQuery::from('guitars')
         ->where('year_purchased', '>=', 2020, 'int')
         ->where('year_purchased', '<=', 2025, 'int')
         ->toStatement())
-    ->assert('sql', fn($s) => $s['sql'], 'SELECT * FROM `guitars` WHERE `year_purchased` >= ? AND `year_purchased` <= ?')
-    ->assert('first value', fn($s) => $s['values'][0], ['type' => 'int', 'value' => 2020])
-    ->assert('second value', fn($s) => $s['values'][1], ['type' => 'int', 'value' => 2025])
-    ->start(null, $config);
+    ->assert('sql', fn(CTGTestState $state) => $state->getSubject()['sql'], CTGTestPredicates::equals('SELECT * FROM `guitars` WHERE `year_purchased` >= ? AND `year_purchased` <= ?'))
+    ->assert('first value', fn(CTGTestState $state) => $state->getSubject()['values'][0], CTGTestPredicates::equals(['type' => 'int', 'value' => 2020]))
+    ->assert('second value', fn(CTGTestState $state) => $state->getSubject()['values'][1], CTGTestPredicates::equals(['type' => 'int', 'value' => 2025]))
+    ;
 
-CTGTest::init('where — operator >')
-    ->stage('build', fn($_) => CTGDBQuery::from('guitars')->where('year_purchased', '>', 2020, 'int')->toStatement())
-    ->assert('sql', fn($s) => $s['sql'], 'SELECT * FROM `guitars` WHERE `year_purchased` > ?')
-    ->start(null, $config);
+$pipelines[] = CTGTest::init('where — operator >')
+    ->stage('build', fn(CTGTestState $state) => CTGDBQuery::from('guitars')->where('year_purchased', '>', 2020, 'int')->toStatement())
+    ->assert('sql', fn(CTGTestState $state) => $state->getSubject()['sql'], CTGTestPredicates::equals('SELECT * FROM `guitars` WHERE `year_purchased` > ?'))
+    ;
 
-CTGTest::init('where — operator <')
-    ->stage('build', fn($_) => CTGDBQuery::from('guitars')->where('year_purchased', '<', 2020, 'int')->toStatement())
-    ->assert('sql', fn($s) => $s['sql'], 'SELECT * FROM `guitars` WHERE `year_purchased` < ?')
-    ->start(null, $config);
+$pipelines[] = CTGTest::init('where — operator <')
+    ->stage('build', fn(CTGTestState $state) => CTGDBQuery::from('guitars')->where('year_purchased', '<', 2020, 'int')->toStatement())
+    ->assert('sql', fn(CTGTestState $state) => $state->getSubject()['sql'], CTGTestPredicates::equals('SELECT * FROM `guitars` WHERE `year_purchased` < ?'))
+    ;
 
-CTGTest::init('where — operator >=')
-    ->stage('build', fn($_) => CTGDBQuery::from('guitars')->where('year_purchased', '>=', 2020, 'int')->toStatement())
-    ->assert('sql', fn($s) => $s['sql'], 'SELECT * FROM `guitars` WHERE `year_purchased` >= ?')
-    ->start(null, $config);
+$pipelines[] = CTGTest::init('where — operator >=')
+    ->stage('build', fn(CTGTestState $state) => CTGDBQuery::from('guitars')->where('year_purchased', '>=', 2020, 'int')->toStatement())
+    ->assert('sql', fn(CTGTestState $state) => $state->getSubject()['sql'], CTGTestPredicates::equals('SELECT * FROM `guitars` WHERE `year_purchased` >= ?'))
+    ;
 
-CTGTest::init('where — operator <=')
-    ->stage('build', fn($_) => CTGDBQuery::from('guitars')->where('year_purchased', '<=', 2025, 'int')->toStatement())
-    ->assert('sql', fn($s) => $s['sql'], 'SELECT * FROM `guitars` WHERE `year_purchased` <= ?')
-    ->start(null, $config);
+$pipelines[] = CTGTest::init('where — operator <=')
+    ->stage('build', fn(CTGTestState $state) => CTGDBQuery::from('guitars')->where('year_purchased', '<=', 2025, 'int')->toStatement())
+    ->assert('sql', fn(CTGTestState $state) => $state->getSubject()['sql'], CTGTestPredicates::equals('SELECT * FROM `guitars` WHERE `year_purchased` <= ?'))
+    ;
 
-CTGTest::init('where — operator !=')
-    ->stage('build', fn($_) => CTGDBQuery::from('guitars')->where('make', '!=', 'Fender', 'str')->toStatement())
-    ->assert('sql', fn($s) => $s['sql'], 'SELECT * FROM `guitars` WHERE `make` != ?')
-    ->start(null, $config);
+$pipelines[] = CTGTest::init('where — operator !=')
+    ->stage('build', fn(CTGTestState $state) => CTGDBQuery::from('guitars')->where('make', '!=', 'Fender', 'str')->toStatement())
+    ->assert('sql', fn(CTGTestState $state) => $state->getSubject()['sql'], CTGTestPredicates::equals('SELECT * FROM `guitars` WHERE `make` != ?'))
+    ;
 
-CTGTest::init('where — operator LIKE')
-    ->stage('build', fn($_) => CTGDBQuery::from('guitars')->where('make', 'LIKE', '%Fender%', 'str')->toStatement())
-    ->assert('sql', fn($s) => $s['sql'], 'SELECT * FROM `guitars` WHERE `make` LIKE ?')
-    ->assert('value', fn($s) => $s['values'][0], ['type' => 'str', 'value' => '%Fender%'])
-    ->start(null, $config);
+$pipelines[] = CTGTest::init('where — operator LIKE')
+    ->stage('build', fn(CTGTestState $state) => CTGDBQuery::from('guitars')->where('make', 'LIKE', '%Fender%', 'str')->toStatement())
+    ->assert('sql', fn(CTGTestState $state) => $state->getSubject()['sql'], CTGTestPredicates::equals('SELECT * FROM `guitars` WHERE `make` LIKE ?'))
+    ->assert('value', fn(CTGTestState $state) => $state->getSubject()['values'][0], CTGTestPredicates::equals(['type' => 'str', 'value' => '%Fender%']))
+    ;
 
-CTGTest::init('where — operator NOT LIKE')
-    ->stage('build', fn($_) => CTGDBQuery::from('guitars')->where('make', 'NOT LIKE', '%Gibson%', 'str')->toStatement())
-    ->assert('sql', fn($s) => $s['sql'], 'SELECT * FROM `guitars` WHERE `make` NOT LIKE ?')
-    ->start(null, $config);
+$pipelines[] = CTGTest::init('where — operator NOT LIKE')
+    ->stage('build', fn(CTGTestState $state) => CTGDBQuery::from('guitars')->where('make', 'NOT LIKE', '%Gibson%', 'str')->toStatement())
+    ->assert('sql', fn(CTGTestState $state) => $state->getSubject()['sql'], CTGTestPredicates::equals('SELECT * FROM `guitars` WHERE `make` NOT LIKE ?'))
+    ;
 
-CTGTest::init('where — operator IN')
-    ->stage('build', fn($_) => CTGDBQuery::from('guitars')
+$pipelines[] = CTGTest::init('where — operator IN')
+    ->stage('build', fn(CTGTestState $state) => CTGDBQuery::from('guitars')
         ->where('make', 'IN', ['Fender', 'Gibson', 'Ibanez'], 'str')
         ->toStatement())
-    ->assert('sql', fn($s) => $s['sql'], 'SELECT * FROM `guitars` WHERE `make` IN (?, ?, ?)')
-    ->assert('values count', fn($s) => count($s['values']), 3)
-    ->assert('first value', fn($s) => $s['values'][0], ['type' => 'str', 'value' => 'Fender'])
-    ->assert('second value', fn($s) => $s['values'][1], ['type' => 'str', 'value' => 'Gibson'])
-    ->assert('third value', fn($s) => $s['values'][2], ['type' => 'str', 'value' => 'Ibanez'])
-    ->start(null, $config);
+    ->assert('sql', fn(CTGTestState $state) => $state->getSubject()['sql'], CTGTestPredicates::equals('SELECT * FROM `guitars` WHERE `make` IN (?, ?, ?)'))
+    ->assert('values count', fn(CTGTestState $state) => count($state->getSubject()['values']), CTGTestPredicates::equals(3))
+    ->assert('first value', fn(CTGTestState $state) => $state->getSubject()['values'][0], CTGTestPredicates::equals(['type' => 'str', 'value' => 'Fender']))
+    ->assert('second value', fn(CTGTestState $state) => $state->getSubject()['values'][1], CTGTestPredicates::equals(['type' => 'str', 'value' => 'Gibson']))
+    ->assert('third value', fn(CTGTestState $state) => $state->getSubject()['values'][2], CTGTestPredicates::equals(['type' => 'str', 'value' => 'Ibanez']))
+    ;
 
-CTGTest::init('where — operator NOT IN')
-    ->stage('build', fn($_) => CTGDBQuery::from('guitars')
+$pipelines[] = CTGTest::init('where — operator NOT IN')
+    ->stage('build', fn(CTGTestState $state) => CTGDBQuery::from('guitars')
         ->where('make', 'NOT IN', ['Fender', 'Gibson'], 'str')
         ->toStatement())
-    ->assert('sql', fn($s) => $s['sql'], 'SELECT * FROM `guitars` WHERE `make` NOT IN (?, ?)')
-    ->assert('values count', fn($s) => count($s['values']), 2)
-    ->start(null, $config);
+    ->assert('sql', fn(CTGTestState $state) => $state->getSubject()['sql'], CTGTestPredicates::equals('SELECT * FROM `guitars` WHERE `make` NOT IN (?, ?)'))
+    ->assert('values count', fn(CTGTestState $state) => count($state->getSubject()['values']), CTGTestPredicates::equals(2))
+    ;
 
-CTGTest::init('where — operator IS (NULL)')
-    ->stage('build', fn($_) => CTGDBQuery::from('guitars')
+$pipelines[] = CTGTest::init('where — operator IS (NULL)')
+    ->stage('build', fn(CTGTestState $state) => CTGDBQuery::from('guitars')
         ->where('color', 'IS', null)
         ->toStatement())
-    ->assert('sql', fn($s) => $s['sql'], 'SELECT * FROM `guitars` WHERE `color` IS NULL')
-    ->assert('no values', fn($s) => $s['values'], [])
-    ->start(null, $config);
+    ->assert('sql', fn(CTGTestState $state) => $state->getSubject()['sql'], CTGTestPredicates::equals('SELECT * FROM `guitars` WHERE `color` IS NULL'))
+    ->assert('no values', fn(CTGTestState $state) => $state->getSubject()['values'], CTGTestPredicates::equals([]))
+    ;
 
-CTGTest::init('where — operator IS NOT (NULL)')
-    ->stage('build', fn($_) => CTGDBQuery::from('guitars')
+$pipelines[] = CTGTest::init('where — operator IS NOT (NULL)')
+    ->stage('build', fn(CTGTestState $state) => CTGDBQuery::from('guitars')
         ->where('color', 'IS NOT', null)
         ->toStatement())
-    ->assert('sql', fn($s) => $s['sql'], 'SELECT * FROM `guitars` WHERE `color` IS NOT NULL')
-    ->assert('no values', fn($s) => $s['values'], [])
-    ->start(null, $config);
+    ->assert('sql', fn(CTGTestState $state) => $state->getSubject()['sql'], CTGTestPredicates::equals('SELECT * FROM `guitars` WHERE `color` IS NOT NULL'))
+    ->assert('no values', fn(CTGTestState $state) => $state->getSubject()['values'], CTGTestPredicates::equals([]))
+    ;
 
-CTGTest::init('where — operator BETWEEN')
-    ->stage('build', fn($_) => CTGDBQuery::from('guitars')
+$pipelines[] = CTGTest::init('where — operator BETWEEN')
+    ->stage('build', fn(CTGTestState $state) => CTGDBQuery::from('guitars')
         ->where('year_purchased', 'BETWEEN', [2020, 2025], 'int')
         ->toStatement())
-    ->assert('sql', fn($s) => $s['sql'], 'SELECT * FROM `guitars` WHERE `year_purchased` BETWEEN ? AND ?')
-    ->assert('values count', fn($s) => count($s['values']), 2)
-    ->assert('low bound', fn($s) => $s['values'][0], ['type' => 'int', 'value' => 2020])
-    ->assert('high bound', fn($s) => $s['values'][1], ['type' => 'int', 'value' => 2025])
-    ->start(null, $config);
+    ->assert('sql', fn(CTGTestState $state) => $state->getSubject()['sql'], CTGTestPredicates::equals('SELECT * FROM `guitars` WHERE `year_purchased` BETWEEN ? AND ?'))
+    ->assert('values count', fn(CTGTestState $state) => count($state->getSubject()['values']), CTGTestPredicates::equals(2))
+    ->assert('low bound', fn(CTGTestState $state) => $state->getSubject()['values'][0], CTGTestPredicates::equals(['type' => 'int', 'value' => 2020]))
+    ->assert('high bound', fn(CTGTestState $state) => $state->getSubject()['values'][1], CTGTestPredicates::equals(['type' => 'int', 'value' => 2025]))
+    ;
 
-CTGTest::init('where — untyped value stored as-is')
-    ->stage('build', fn($_) => CTGDBQuery::from('guitars')
+$pipelines[] = CTGTest::init('where — untyped value stored as-is')
+    ->stage('build', fn(CTGTestState $state) => CTGDBQuery::from('guitars')
         ->where('make', '=', 'Fender')
         ->toStatement())
-    ->assert('sql', fn($s) => $s['sql'], 'SELECT * FROM `guitars` WHERE `make` = ?')
-    ->assert('value stored as-is', fn($s) => $s['values'][0], 'Fender')
-    ->start(null, $config);
+    ->assert('sql', fn(CTGTestState $state) => $state->getSubject()['sql'], CTGTestPredicates::equals('SELECT * FROM `guitars` WHERE `make` = ?'))
+    ->assert('value stored as-is', fn(CTGTestState $state) => $state->getSubject()['values'][0], CTGTestPredicates::equals('Fender'))
+    ;
 
-CTGTest::init('where — invalid column throws INVALID_IDENTIFIER')
-    ->stage('attempt', function($_) {
+$pipelines[] = CTGTest::init('where — invalid column throws INVALID_IDENTIFIER')
+    ->stage('attempt', function(CTGTestState $state) {
         try {
             CTGDBQuery::from('guitars')->where('make; DROP TABLE', '=', 'x', 'str');
             return 'no exception';
@@ -212,11 +214,11 @@ CTGTest::init('where — invalid column throws INVALID_IDENTIFIER')
             return $e->type;
         }
     })
-    ->assert('throws INVALID_IDENTIFIER', fn($r) => $r, 'INVALID_IDENTIFIER')
-    ->start(null, $config);
+    ->assert('throws INVALID_IDENTIFIER', fn(CTGTestState $state) => $state->getSubject(), CTGTestPredicates::equals('INVALID_IDENTIFIER'))
+    ;
 
-CTGTest::init('where — invalid operator throws INVALID_OPERATOR')
-    ->stage('attempt', function($_) {
+$pipelines[] = CTGTest::init('where — invalid operator throws INVALID_OPERATOR')
+    ->stage('attempt', function(CTGTestState $state) {
         try {
             CTGDBQuery::from('guitars')->where('make', 'EVIL', 'x', 'str');
             return 'no exception';
@@ -224,64 +226,62 @@ CTGTest::init('where — invalid operator throws INVALID_OPERATOR')
             return $e->type;
         }
     })
-    ->assert('throws INVALID_OPERATOR', fn($r) => $r, 'INVALID_OPERATOR')
-    ->start(null, $config);
+    ->assert('throws INVALID_OPERATOR', fn(CTGTestState $state) => $state->getSubject(), CTGTestPredicates::equals('INVALID_OPERATOR'))
+    ;
 
 // ═══════════════════════════════════════════════════════════════
 // JOINs
 // ═══════════════════════════════════════════════════════════════
 
-CTGTest::init('join — inner join')
-    ->stage('build', fn($_) => CTGDBQuery::from('guitars')
+$pipelines[] = CTGTest::init('join — inner join')
+    ->stage('build', fn(CTGTestState $state) => CTGDBQuery::from('guitars')
         ->join('pickups', 'inner', ['guitars.id' => 'pickups.guitar_id'])
         ->toStatement())
-    ->assert('sql', fn($s) => $s['sql'], 'SELECT * FROM `guitars` INNER JOIN `pickups` ON `guitars`.`id` = `pickups`.`guitar_id`')
-    ->assert('values empty', fn($s) => $s['values'], [])
-    ->start(null, $config);
+    ->assert('sql', fn(CTGTestState $state) => $state->getSubject()['sql'], CTGTestPredicates::equals('SELECT * FROM `guitars` INNER JOIN `pickups` ON `guitars`.`id` = `pickups`.`guitar_id`'))
+    ->assert('values empty', fn(CTGTestState $state) => $state->getSubject()['values'], CTGTestPredicates::equals([]))
+    ;
 
-CTGTest::init('join — left join')
-    ->stage('build', fn($_) => CTGDBQuery::from('guitars')
+$pipelines[] = CTGTest::init('join — left join')
+    ->stage('build', fn(CTGTestState $state) => CTGDBQuery::from('guitars')
         ->join('pickups', 'left', ['guitars.id' => 'pickups.guitar_id'])
         ->toStatement())
-    ->assert('sql', fn($s) => $s['sql'], 'SELECT * FROM `guitars` LEFT JOIN `pickups` ON `guitars`.`id` = `pickups`.`guitar_id`')
-    ->start(null, $config);
+    ->assert('sql', fn(CTGTestState $state) => $state->getSubject()['sql'], CTGTestPredicates::equals('SELECT * FROM `guitars` LEFT JOIN `pickups` ON `guitars`.`id` = `pickups`.`guitar_id`'))
+    ;
 
-CTGTest::init('join — right join')
-    ->stage('build', fn($_) => CTGDBQuery::from('guitars')
+$pipelines[] = CTGTest::init('join — right join')
+    ->stage('build', fn(CTGTestState $state) => CTGDBQuery::from('guitars')
         ->join('pickups', 'right', ['guitars.id' => 'pickups.guitar_id'])
         ->toStatement())
-    ->assert('sql', fn($s) => $s['sql'], 'SELECT * FROM `guitars` RIGHT JOIN `pickups` ON `guitars`.`id` = `pickups`.`guitar_id`')
-    ->start(null, $config);
+    ->assert('sql', fn(CTGTestState $state) => $state->getSubject()['sql'], CTGTestPredicates::equals('SELECT * FROM `guitars` RIGHT JOIN `pickups` ON `guitars`.`id` = `pickups`.`guitar_id`'))
+    ;
 
-CTGTest::init('join — cross join')
-    ->stage('build', fn($_) => CTGDBQuery::from('guitars')
+$pipelines[] = CTGTest::init('join — cross join')
+    ->stage('build', fn(CTGTestState $state) => CTGDBQuery::from('guitars')
         ->join('pickups', 'cross', [])
         ->toStatement())
-    ->assert('sql', fn($s) => $s['sql'], 'SELECT * FROM `guitars` CROSS JOIN `pickups`')
-    ->start(null, $config);
+    ->assert('sql', fn(CTGTestState $state) => $state->getSubject()['sql'], CTGTestPredicates::equals('SELECT * FROM `guitars` CROSS JOIN `pickups`'))
+    ;
 
-CTGTest::init('join — multiple joins in order')
-    ->stage('build', fn($_) => CTGDBQuery::from('articles')
+$pipelines[] = CTGTest::init('join — multiple joins in order')
+    ->stage('build', fn(CTGTestState $state) => CTGDBQuery::from('articles')
         ->join('categories', 'left', ['articles.category_id' => 'categories.id'])
         ->join('users', 'inner', ['articles.author_id' => 'users.id'])
         ->toStatement())
-    ->assert('sql', fn($s) => $s['sql'],
-        'SELECT * FROM `articles` LEFT JOIN `categories` ON `articles`.`category_id` = `categories`.`id` INNER JOIN `users` ON `articles`.`author_id` = `users`.`id`')
-    ->start(null, $config);
+    ->assert('sql', fn(CTGTestState $state) => $state->getSubject()['sql'], CTGTestPredicates::equals('SELECT * FROM `articles` LEFT JOIN `categories` ON `articles`.`category_id` = `categories`.`id` INNER JOIN `users` ON `articles`.`author_id` = `users`.`id`'))
+    ;
 
-CTGTest::init('join — composite ON (multiple column pairs)')
-    ->stage('build', fn($_) => CTGDBQuery::from('orders')
+$pipelines[] = CTGTest::init('join — composite ON (multiple column pairs)')
+    ->stage('build', fn(CTGTestState $state) => CTGDBQuery::from('orders')
         ->join('users', 'inner', [
             'orders.user_id'   => 'users.id',
             'orders.tenant_id' => 'users.tenant_id'
         ])
         ->toStatement())
-    ->assert('sql', fn($s) => $s['sql'],
-        'SELECT * FROM `orders` INNER JOIN `users` ON `orders`.`user_id` = `users`.`id` AND `orders`.`tenant_id` = `users`.`tenant_id`')
-    ->start(null, $config);
+    ->assert('sql', fn(CTGTestState $state) => $state->getSubject()['sql'], CTGTestPredicates::equals('SELECT * FROM `orders` INNER JOIN `users` ON `orders`.`user_id` = `users`.`id` AND `orders`.`tenant_id` = `users`.`tenant_id`'))
+    ;
 
-CTGTest::init('join — invalid table throws INVALID_IDENTIFIER')
-    ->stage('attempt', function($_) {
+$pipelines[] = CTGTest::init('join — invalid table throws INVALID_IDENTIFIER')
+    ->stage('attempt', function(CTGTestState $state) {
         try {
             CTGDBQuery::from('guitars')->join('pickups; DROP TABLE', 'inner', ['guitars.id' => 'pickups.guitar_id']);
             return 'no exception';
@@ -289,11 +289,11 @@ CTGTest::init('join — invalid table throws INVALID_IDENTIFIER')
             return $e->type;
         }
     })
-    ->assert('throws INVALID_IDENTIFIER', fn($r) => $r, 'INVALID_IDENTIFIER')
-    ->start(null, $config);
+    ->assert('throws INVALID_IDENTIFIER', fn(CTGTestState $state) => $state->getSubject(), CTGTestPredicates::equals('INVALID_IDENTIFIER'))
+    ;
 
-CTGTest::init('join — invalid join type throws INVALID_JOIN_TYPE')
-    ->stage('attempt', function($_) {
+$pipelines[] = CTGTest::init('join — invalid join type throws INVALID_JOIN_TYPE')
+    ->stage('attempt', function(CTGTestState $state) {
         try {
             CTGDBQuery::from('guitars')->join('pickups', 'EVIL', ['guitars.id' => 'pickups.guitar_id']);
             return 'no exception';
@@ -301,11 +301,11 @@ CTGTest::init('join — invalid join type throws INVALID_JOIN_TYPE')
             return $e->type;
         }
     })
-    ->assert('throws INVALID_JOIN_TYPE', fn($r) => $r, 'INVALID_JOIN_TYPE')
-    ->start(null, $config);
+    ->assert('throws INVALID_JOIN_TYPE', fn(CTGTestState $state) => $state->getSubject(), CTGTestPredicates::equals('INVALID_JOIN_TYPE'))
+    ;
 
-CTGTest::init('join — invalid ON column throws INVALID_IDENTIFIER')
-    ->stage('attempt', function($_) {
+$pipelines[] = CTGTest::init('join — invalid ON column throws INVALID_IDENTIFIER')
+    ->stage('attempt', function(CTGTestState $state) {
         try {
             CTGDBQuery::from('guitars')->join('pickups', 'inner', ['guitars.id; DROP' => 'pickups.guitar_id']);
             return 'no exception';
@@ -313,38 +313,38 @@ CTGTest::init('join — invalid ON column throws INVALID_IDENTIFIER')
             return $e->type;
         }
     })
-    ->assert('throws INVALID_IDENTIFIER', fn($r) => $r, 'INVALID_IDENTIFIER')
-    ->start(null, $config);
+    ->assert('throws INVALID_IDENTIFIER', fn(CTGTestState $state) => $state->getSubject(), CTGTestPredicates::equals('INVALID_IDENTIFIER'))
+    ;
 
 // ═══════════════════════════════════════════════════════════════
 // ORDER BY
 // ═══════════════════════════════════════════════════════════════
 
-CTGTest::init('orderBy — single column default ASC')
-    ->stage('build', fn($_) => CTGDBQuery::from('guitars')->orderBy('make')->toStatement())
-    ->assert('sql', fn($s) => $s['sql'], 'SELECT * FROM `guitars` ORDER BY `make` ASC')
-    ->start(null, $config);
+$pipelines[] = CTGTest::init('orderBy — single column default ASC')
+    ->stage('build', fn(CTGTestState $state) => CTGDBQuery::from('guitars')->orderBy('make')->toStatement())
+    ->assert('sql', fn(CTGTestState $state) => $state->getSubject()['sql'], CTGTestPredicates::equals('SELECT * FROM `guitars` ORDER BY `make` ASC'))
+    ;
 
-CTGTest::init('orderBy — explicit DESC')
-    ->stage('build', fn($_) => CTGDBQuery::from('guitars')->orderBy('make', 'DESC')->toStatement())
-    ->assert('sql', fn($s) => $s['sql'], 'SELECT * FROM `guitars` ORDER BY `make` DESC')
-    ->start(null, $config);
+$pipelines[] = CTGTest::init('orderBy — explicit DESC')
+    ->stage('build', fn(CTGTestState $state) => CTGDBQuery::from('guitars')->orderBy('make', 'DESC')->toStatement())
+    ->assert('sql', fn(CTGTestState $state) => $state->getSubject()['sql'], CTGTestPredicates::equals('SELECT * FROM `guitars` ORDER BY `make` DESC'))
+    ;
 
-CTGTest::init('orderBy — multiple columns')
-    ->stage('build', fn($_) => CTGDBQuery::from('guitars')
+$pipelines[] = CTGTest::init('orderBy — multiple columns')
+    ->stage('build', fn(CTGTestState $state) => CTGDBQuery::from('guitars')
         ->orderBy('make', 'ASC')
         ->orderBy('year_purchased', 'DESC')
         ->toStatement())
-    ->assert('sql', fn($s) => $s['sql'], 'SELECT * FROM `guitars` ORDER BY `make` ASC, `year_purchased` DESC')
-    ->start(null, $config);
+    ->assert('sql', fn(CTGTestState $state) => $state->getSubject()['sql'], CTGTestPredicates::equals('SELECT * FROM `guitars` ORDER BY `make` ASC, `year_purchased` DESC'))
+    ;
 
-CTGTest::init('orderBy — table-qualified')
-    ->stage('build', fn($_) => CTGDBQuery::from('guitars')->orderBy('guitars.make')->toStatement())
-    ->assert('sql', fn($s) => $s['sql'], 'SELECT * FROM `guitars` ORDER BY `guitars`.`make` ASC')
-    ->start(null, $config);
+$pipelines[] = CTGTest::init('orderBy — table-qualified')
+    ->stage('build', fn(CTGTestState $state) => CTGDBQuery::from('guitars')->orderBy('guitars.make')->toStatement())
+    ->assert('sql', fn(CTGTestState $state) => $state->getSubject()['sql'], CTGTestPredicates::equals('SELECT * FROM `guitars` ORDER BY `guitars`.`make` ASC'))
+    ;
 
-CTGTest::init('orderBy — invalid column throws INVALID_IDENTIFIER')
-    ->stage('attempt', function($_) {
+$pipelines[] = CTGTest::init('orderBy — invalid column throws INVALID_IDENTIFIER')
+    ->stage('attempt', function(CTGTestState $state) {
         try {
             CTGDBQuery::from('guitars')->orderBy('make; DROP TABLE');
             return 'no exception';
@@ -352,11 +352,11 @@ CTGTest::init('orderBy — invalid column throws INVALID_IDENTIFIER')
             return $e->type;
         }
     })
-    ->assert('throws INVALID_IDENTIFIER', fn($r) => $r, 'INVALID_IDENTIFIER')
-    ->start(null, $config);
+    ->assert('throws INVALID_IDENTIFIER', fn(CTGTestState $state) => $state->getSubject(), CTGTestPredicates::equals('INVALID_IDENTIFIER'))
+    ;
 
-CTGTest::init('orderBy — invalid direction throws INVALID_SORT')
-    ->stage('attempt', function($_) {
+$pipelines[] = CTGTest::init('orderBy — invalid direction throws INVALID_SORT')
+    ->stage('attempt', function(CTGTestState $state) {
         try {
             CTGDBQuery::from('guitars')->orderBy('make', 'RANDOM');
             return 'no exception';
@@ -364,25 +364,25 @@ CTGTest::init('orderBy — invalid direction throws INVALID_SORT')
             return $e->type;
         }
     })
-    ->assert('throws INVALID_SORT', fn($r) => $r, 'INVALID_SORT')
-    ->start(null, $config);
+    ->assert('throws INVALID_SORT', fn(CTGTestState $state) => $state->getSubject(), CTGTestPredicates::equals('INVALID_SORT'))
+    ;
 
 // ═══════════════════════════════════════════════════════════════
 // GROUP BY
 // ═══════════════════════════════════════════════════════════════
 
-CTGTest::init('groupBy — single column')
-    ->stage('build', fn($_) => CTGDBQuery::from('guitars')->groupBy('make')->toStatement())
-    ->assert('sql', fn($s) => $s['sql'], 'SELECT * FROM `guitars` GROUP BY `make`')
-    ->start(null, $config);
+$pipelines[] = CTGTest::init('groupBy — single column')
+    ->stage('build', fn(CTGTestState $state) => CTGDBQuery::from('guitars')->groupBy('make')->toStatement())
+    ->assert('sql', fn(CTGTestState $state) => $state->getSubject()['sql'], CTGTestPredicates::equals('SELECT * FROM `guitars` GROUP BY `make`'))
+    ;
 
-CTGTest::init('groupBy — multiple columns')
-    ->stage('build', fn($_) => CTGDBQuery::from('guitars')->groupBy('make', 'color')->toStatement())
-    ->assert('sql', fn($s) => $s['sql'], 'SELECT * FROM `guitars` GROUP BY `make`, `color`')
-    ->start(null, $config);
+$pipelines[] = CTGTest::init('groupBy — multiple columns')
+    ->stage('build', fn(CTGTestState $state) => CTGDBQuery::from('guitars')->groupBy('make', 'color')->toStatement())
+    ->assert('sql', fn(CTGTestState $state) => $state->getSubject()['sql'], CTGTestPredicates::equals('SELECT * FROM `guitars` GROUP BY `make`, `color`'))
+    ;
 
-CTGTest::init('groupBy — invalid column throws INVALID_IDENTIFIER')
-    ->stage('attempt', function($_) {
+$pipelines[] = CTGTest::init('groupBy — invalid column throws INVALID_IDENTIFIER')
+    ->stage('attempt', function(CTGTestState $state) {
         try {
             CTGDBQuery::from('guitars')->groupBy('make; DROP TABLE');
             return 'no exception';
@@ -390,121 +390,119 @@ CTGTest::init('groupBy — invalid column throws INVALID_IDENTIFIER')
             return $e->type;
         }
     })
-    ->assert('throws INVALID_IDENTIFIER', fn($r) => $r, 'INVALID_IDENTIFIER')
-    ->start(null, $config);
+    ->assert('throws INVALID_IDENTIFIER', fn(CTGTestState $state) => $state->getSubject(), CTGTestPredicates::equals('INVALID_IDENTIFIER'))
+    ;
 
 // ═══════════════════════════════════════════════════════════════
 // LIMIT / OFFSET / PAGE
 // ═══════════════════════════════════════════════════════════════
 
-CTGTest::init('limit — produces LIMIT clause')
-    ->stage('build', fn($_) => CTGDBQuery::from('guitars')->limit(10)->toStatement())
-    ->assert('sql', fn($s) => $s['sql'], 'SELECT * FROM `guitars` LIMIT 10')
-    ->start(null, $config);
+$pipelines[] = CTGTest::init('limit — produces LIMIT clause')
+    ->stage('build', fn(CTGTestState $state) => CTGDBQuery::from('guitars')->limit(10)->toStatement())
+    ->assert('sql', fn(CTGTestState $state) => $state->getSubject()['sql'], CTGTestPredicates::equals('SELECT * FROM `guitars` LIMIT 10'))
+    ;
 
-CTGTest::init('offset — produces OFFSET clause')
-    ->stage('build', fn($_) => CTGDBQuery::from('guitars')->offset(20)->toStatement())
-    ->assert('sql', fn($s) => $s['sql'], 'SELECT * FROM `guitars` OFFSET 20')
-    ->start(null, $config);
+$pipelines[] = CTGTest::init('offset — produces OFFSET clause')
+    ->stage('build', fn(CTGTestState $state) => CTGDBQuery::from('guitars')->offset(20)->toStatement())
+    ->assert('sql', fn(CTGTestState $state) => $state->getSubject()['sql'], CTGTestPredicates::equals('SELECT * FROM `guitars` OFFSET 20'))
+    ;
 
-CTGTest::init('limit + offset — both present')
-    ->stage('build', fn($_) => CTGDBQuery::from('guitars')->limit(10)->offset(20)->toStatement())
-    ->assert('sql', fn($s) => $s['sql'], 'SELECT * FROM `guitars` LIMIT 10 OFFSET 20')
-    ->start(null, $config);
+$pipelines[] = CTGTest::init('limit + offset — both present')
+    ->stage('build', fn(CTGTestState $state) => CTGDBQuery::from('guitars')->limit(10)->offset(20)->toStatement())
+    ->assert('sql', fn(CTGTestState $state) => $state->getSubject()['sql'], CTGTestPredicates::equals('SELECT * FROM `guitars` LIMIT 10 OFFSET 20'))
+    ;
 
-CTGTest::init('page — page 1 default perPage')
-    ->stage('build', fn($_) => CTGDBQuery::from('guitars')->page(1)->toStatement())
-    ->assert('sql', fn($s) => $s['sql'], 'SELECT * FROM `guitars` LIMIT 20 OFFSET 0')
-    ->start(null, $config);
+$pipelines[] = CTGTest::init('page — page 1 default perPage')
+    ->stage('build', fn(CTGTestState $state) => CTGDBQuery::from('guitars')->page(1)->toStatement())
+    ->assert('sql', fn(CTGTestState $state) => $state->getSubject()['sql'], CTGTestPredicates::equals('SELECT * FROM `guitars` LIMIT 20 OFFSET 0'))
+    ;
 
-CTGTest::init('page — page 3 with perPage 10')
-    ->stage('build', fn($_) => CTGDBQuery::from('guitars')->page(3, 10)->toStatement())
-    ->assert('sql', fn($s) => $s['sql'], 'SELECT * FROM `guitars` LIMIT 10 OFFSET 20')
-    ->start(null, $config);
+$pipelines[] = CTGTest::init('page — page 3 with perPage 10')
+    ->stage('build', fn(CTGTestState $state) => CTGDBQuery::from('guitars')->page(3, 10)->toStatement())
+    ->assert('sql', fn(CTGTestState $state) => $state->getSubject()['sql'], CTGTestPredicates::equals('SELECT * FROM `guitars` LIMIT 10 OFFSET 20'))
+    ;
 
-CTGTest::init('page — page 2 default perPage 20')
-    ->stage('build', fn($_) => CTGDBQuery::from('guitars')->page(2)->toStatement())
-    ->assert('sql', fn($s) => $s['sql'], 'SELECT * FROM `guitars` LIMIT 20 OFFSET 20')
-    ->start(null, $config);
+$pipelines[] = CTGTest::init('page — page 2 default perPage 20')
+    ->stage('build', fn(CTGTestState $state) => CTGDBQuery::from('guitars')->page(2)->toStatement())
+    ->assert('sql', fn(CTGTestState $state) => $state->getSubject()['sql'], CTGTestPredicates::equals('SELECT * FROM `guitars` LIMIT 20 OFFSET 20'))
+    ;
 
-CTGTest::init('page — overrides limit/offset')
-    ->stage('build', fn($_) => CTGDBQuery::from('guitars')
+$pipelines[] = CTGTest::init('page — overrides limit/offset')
+    ->stage('build', fn(CTGTestState $state) => CTGDBQuery::from('guitars')
         ->limit(5)
         ->offset(10)
         ->page(2, 15)
         ->toStatement())
-    ->assert('sql uses page values', fn($s) => $s['sql'], 'SELECT * FROM `guitars` LIMIT 15 OFFSET 15')
-    ->start(null, $config);
+    ->assert('sql uses page values', fn(CTGTestState $state) => $state->getSubject()['sql'], CTGTestPredicates::equals('SELECT * FROM `guitars` LIMIT 15 OFFSET 15'))
+    ;
 
-CTGTest::init('limit/offset — overrides page')
-    ->stage('build', fn($_) => CTGDBQuery::from('guitars')
+$pipelines[] = CTGTest::init('limit/offset — overrides page')
+    ->stage('build', fn(CTGTestState $state) => CTGDBQuery::from('guitars')
         ->page(3, 10)
         ->limit(5)
         ->offset(0)
         ->toStatement())
-    ->assert('sql uses limit/offset values', fn($s) => $s['sql'], 'SELECT * FROM `guitars` LIMIT 5 OFFSET 0')
-    ->start(null, $config);
+    ->assert('sql uses limit/offset values', fn(CTGTestState $state) => $state->getSubject()['sql'], CTGTestPredicates::equals('SELECT * FROM `guitars` LIMIT 5 OFFSET 0'))
+    ;
 
 // ═══════════════════════════════════════════════════════════════
 // toCountStatement
 // ═══════════════════════════════════════════════════════════════
 
-CTGTest::init('toCountStatement — basic count')
-    ->stage('build', fn($_) => CTGDBQuery::from('guitars')->toCountStatement())
-    ->assert('sql', fn($s) => $s['sql'], 'SELECT COUNT(*) as total FROM `guitars`')
-    ->assert('values empty', fn($s) => $s['values'], [])
-    ->start(null, $config);
+$pipelines[] = CTGTest::init('toCountStatement — basic count')
+    ->stage('build', fn(CTGTestState $state) => CTGDBQuery::from('guitars')->toCountStatement())
+    ->assert('sql', fn(CTGTestState $state) => $state->getSubject()['sql'], CTGTestPredicates::equals('SELECT COUNT(*) as total FROM `guitars`'))
+    ->assert('values empty', fn(CTGTestState $state) => $state->getSubject()['values'], CTGTestPredicates::equals([]))
+    ;
 
-CTGTest::init('toCountStatement — strips ORDER BY')
-    ->stage('build', fn($_) => CTGDBQuery::from('guitars')
+$pipelines[] = CTGTest::init('toCountStatement — strips ORDER BY')
+    ->stage('build', fn(CTGTestState $state) => CTGDBQuery::from('guitars')
         ->orderBy('make')
         ->toCountStatement())
-    ->assert('sql has no ORDER BY', fn($s) => $s['sql'], 'SELECT COUNT(*) as total FROM `guitars`')
-    ->start(null, $config);
+    ->assert('sql has no ORDER BY', fn(CTGTestState $state) => $state->getSubject()['sql'], CTGTestPredicates::equals('SELECT COUNT(*) as total FROM `guitars`'))
+    ;
 
-CTGTest::init('toCountStatement — strips LIMIT/OFFSET')
-    ->stage('build', fn($_) => CTGDBQuery::from('guitars')
+$pipelines[] = CTGTest::init('toCountStatement — strips LIMIT/OFFSET')
+    ->stage('build', fn(CTGTestState $state) => CTGDBQuery::from('guitars')
         ->limit(10)
         ->offset(20)
         ->toCountStatement())
-    ->assert('sql has no LIMIT/OFFSET', fn($s) => $s['sql'], 'SELECT COUNT(*) as total FROM `guitars`')
-    ->start(null, $config);
+    ->assert('sql has no LIMIT/OFFSET', fn(CTGTestState $state) => $state->getSubject()['sql'], CTGTestPredicates::equals('SELECT COUNT(*) as total FROM `guitars`'))
+    ;
 
-CTGTest::init('toCountStatement — preserves WHERE')
-    ->stage('build', fn($_) => CTGDBQuery::from('guitars')
+$pipelines[] = CTGTest::init('toCountStatement — preserves WHERE')
+    ->stage('build', fn(CTGTestState $state) => CTGDBQuery::from('guitars')
         ->where('make', '=', 'Fender', 'str')
         ->orderBy('make')
         ->limit(10)
         ->toCountStatement())
-    ->assert('sql', fn($s) => $s['sql'], 'SELECT COUNT(*) as total FROM `guitars` WHERE `make` = ?')
-    ->assert('values preserved', fn($s) => $s['values'], [['type' => 'str', 'value' => 'Fender']])
-    ->start(null, $config);
+    ->assert('sql', fn(CTGTestState $state) => $state->getSubject()['sql'], CTGTestPredicates::equals('SELECT COUNT(*) as total FROM `guitars` WHERE `make` = ?'))
+    ->assert('values preserved', fn(CTGTestState $state) => $state->getSubject()['values'], CTGTestPredicates::equals([['type' => 'str', 'value' => 'Fender']]))
+    ;
 
-CTGTest::init('toCountStatement — preserves JOINs')
-    ->stage('build', fn($_) => CTGDBQuery::from('guitars')
+$pipelines[] = CTGTest::init('toCountStatement — preserves JOINs')
+    ->stage('build', fn(CTGTestState $state) => CTGDBQuery::from('guitars')
         ->join('pickups', 'inner', ['guitars.id' => 'pickups.guitar_id'])
         ->where('guitars.make', '=', 'Fender', 'str')
         ->toCountStatement())
-    ->assert('sql', fn($s) => $s['sql'],
-        'SELECT COUNT(*) as total FROM `guitars` INNER JOIN `pickups` ON `guitars`.`id` = `pickups`.`guitar_id` WHERE `guitars`.`make` = ?')
-    ->assert('values preserved', fn($s) => $s['values'], [['type' => 'str', 'value' => 'Fender']])
-    ->start(null, $config);
+    ->assert('sql', fn(CTGTestState $state) => $state->getSubject()['sql'], CTGTestPredicates::equals('SELECT COUNT(*) as total FROM `guitars` INNER JOIN `pickups` ON `guitars`.`id` = `pickups`.`guitar_id` WHERE `guitars`.`make` = ?'))
+    ->assert('values preserved', fn(CTGTestState $state) => $state->getSubject()['values'], CTGTestPredicates::equals([['type' => 'str', 'value' => 'Fender']]))
+    ;
 
-CTGTest::init('toCountStatement — preserves GROUP BY (wraps in subquery)')
-    ->stage('build', fn($_) => CTGDBQuery::from('guitars')
+$pipelines[] = CTGTest::init('toCountStatement — preserves GROUP BY (wraps in subquery)')
+    ->stage('build', fn(CTGTestState $state) => CTGDBQuery::from('guitars')
         ->columns('make')
         ->groupBy('make')
         ->toCountStatement())
-    ->assert('sql wraps in subquery', fn($s) => $s['sql'],
-        'SELECT COUNT(*) as total FROM (SELECT `make` FROM `guitars` GROUP BY `make`) as _counted')
-    ->start(null, $config);
+    ->assert('sql wraps in subquery', fn(CTGTestState $state) => $state->getSubject()['sql'], CTGTestPredicates::equals('SELECT COUNT(*) as total FROM (SELECT `make` FROM `guitars` GROUP BY `make`) as _counted'))
+    ;
 
 // ═══════════════════════════════════════════════════════════════
 // FULL QUERY COMPOSITION
 // ═══════════════════════════════════════════════════════════════
 
-CTGTest::init('full query — columns, where, join, orderBy, groupBy, limit')
-    ->stage('build', fn($_) => CTGDBQuery::from('guitars')
+$pipelines[] = CTGTest::init('full query — columns, where, join, orderBy, groupBy, limit')
+    ->stage('build', fn(CTGTestState $state) => CTGDBQuery::from('guitars')
         ->join('pickups', 'inner', ['guitars.id' => 'pickups.guitar_id'])
         ->columns('guitars.make', 'pickups.type')
         ->where('guitars.year_purchased', '>=', 2020, 'int')
@@ -513,25 +511,23 @@ CTGTest::init('full query — columns, where, join, orderBy, groupBy, limit')
         ->limit(10)
         ->offset(5)
         ->toStatement())
-    ->assert('sql', fn($s) => $s['sql'],
-        'SELECT `guitars`.`make`, `pickups`.`type` FROM `guitars` INNER JOIN `pickups` ON `guitars`.`id` = `pickups`.`guitar_id` WHERE `guitars`.`year_purchased` >= ? GROUP BY `guitars`.`make` ORDER BY `guitars`.`make` ASC LIMIT 10 OFFSET 5')
-    ->assert('values', fn($s) => $s['values'], [['type' => 'int', 'value' => 2020]])
-    ->start(null, $config);
+    ->assert('sql', fn(CTGTestState $state) => $state->getSubject()['sql'], CTGTestPredicates::equals('SELECT `guitars`.`make`, `pickups`.`type` FROM `guitars` INNER JOIN `pickups` ON `guitars`.`id` = `pickups`.`guitar_id` WHERE `guitars`.`year_purchased` >= ? GROUP BY `guitars`.`make` ORDER BY `guitars`.`make` ASC LIMIT 10 OFFSET 5'))
+    ->assert('values', fn(CTGTestState $state) => $state->getSubject()['values'], CTGTestPredicates::equals([['type' => 'int', 'value' => 2020]]))
+    ;
 
-CTGTest::init('full query — join + where + pagination')
-    ->stage('build', fn($_) => CTGDBQuery::from('guitars')
+$pipelines[] = CTGTest::init('full query — join + where + pagination')
+    ->stage('build', fn(CTGTestState $state) => CTGDBQuery::from('guitars')
         ->join('pickups', 'left', ['guitars.id' => 'pickups.guitar_id'])
         ->columns('guitars.*', 'pickups.type as pickup_type')
         ->where('guitars.make', '=', 'Fender', 'str')
         ->where('guitars.year_purchased', '>=', 2020, 'int')
         ->page(2, 10)
         ->toStatement())
-    ->assert('sql', fn($s) => $s['sql'],
-        'SELECT `guitars`.*, `pickups`.`type` as `pickup_type` FROM `guitars` LEFT JOIN `pickups` ON `guitars`.`id` = `pickups`.`guitar_id` WHERE `guitars`.`make` = ? AND `guitars`.`year_purchased` >= ? LIMIT 10 OFFSET 10')
-    ->assert('values count', fn($s) => count($s['values']), 2)
-    ->assert('first value', fn($s) => $s['values'][0], ['type' => 'str', 'value' => 'Fender'])
-    ->assert('second value', fn($s) => $s['values'][1], ['type' => 'int', 'value' => 2020])
-    ->start(null, $config);
+    ->assert('sql', fn(CTGTestState $state) => $state->getSubject()['sql'], CTGTestPredicates::equals('SELECT `guitars`.*, `pickups`.`type` as `pickup_type` FROM `guitars` LEFT JOIN `pickups` ON `guitars`.`id` = `pickups`.`guitar_id` WHERE `guitars`.`make` = ? AND `guitars`.`year_purchased` >= ? LIMIT 10 OFFSET 10'))
+    ->assert('values count', fn(CTGTestState $state) => count($state->getSubject()['values']), CTGTestPredicates::equals(2))
+    ->assert('first value', fn(CTGTestState $state) => $state->getSubject()['values'][0], CTGTestPredicates::equals(['type' => 'str', 'value' => 'Fender']))
+    ->assert('second value', fn(CTGTestState $state) => $state->getSubject()['values'][1], CTGTestPredicates::equals(['type' => 'int', 'value' => 2020]))
+    ;
 
 // ═══════════════════════════════════════════════════════════════
 // SECURITY — INJECTION VIA CTGDBQuery
@@ -579,8 +575,8 @@ $identifierPayloads = [
 // ── Malicious table name in from() ──────────────────────────────
 
 foreach ($identifierPayloads as $label => $payload) {
-    CTGTest::init("injection — from() with {$label}")
-        ->stage('attempt', function($_) use ($payload) {
+    $pipelines[] = CTGTest::init("injection — from() with {$label}")
+        ->stage('attempt', function(CTGTestState $state) use ($payload){
             try {
                 CTGDBQuery::from($payload);
                 return 'NOT BLOCKED';
@@ -588,8 +584,8 @@ foreach ($identifierPayloads as $label => $payload) {
                 return $e->type;
             }
         })
-        ->assert('blocked as INVALID_IDENTIFIER', fn($r) => $r, 'INVALID_IDENTIFIER')
-        ->start(null, $config);
+        ->assert('blocked as INVALID_IDENTIFIER', fn(CTGTestState $state) => $state->getSubject(), CTGTestPredicates::equals('INVALID_IDENTIFIER'))
+        ;
 }
 
 // ── Malicious column in columns() ───────────────────────────────
@@ -609,8 +605,8 @@ $columnPayloads = [
 ];
 
 foreach ($columnPayloads as $label => $payload) {
-    CTGTest::init("injection — columns() with {$label}")
-        ->stage('attempt', function($_) use ($payload) {
+    $pipelines[] = CTGTest::init("injection — columns() with {$label}")
+        ->stage('attempt', function(CTGTestState $state) use ($payload){
             try {
                 CTGDBQuery::from('guitars')->columns($payload);
                 return 'NOT BLOCKED';
@@ -618,15 +614,15 @@ foreach ($columnPayloads as $label => $payload) {
                 return $e->type;
             }
         })
-        ->assert('blocked as INVALID_IDENTIFIER', fn($r) => $r, 'INVALID_IDENTIFIER')
-        ->start(null, $config);
+        ->assert('blocked as INVALID_IDENTIFIER', fn(CTGTestState $state) => $state->getSubject(), CTGTestPredicates::equals('INVALID_IDENTIFIER'))
+        ;
 }
 
 // ── Malicious column in where() ─────────────────────────────────
 
 foreach ($columnPayloads as $label => $payload) {
-    CTGTest::init("injection — where() column with {$label}")
-        ->stage('attempt', function($_) use ($payload) {
+    $pipelines[] = CTGTest::init("injection — where() column with {$label}")
+        ->stage('attempt', function(CTGTestState $state) use ($payload){
             try {
                 CTGDBQuery::from('guitars')->where($payload, '=', 'x', 'str');
                 return 'NOT BLOCKED';
@@ -634,8 +630,8 @@ foreach ($columnPayloads as $label => $payload) {
                 return $e->type;
             }
         })
-        ->assert('blocked as INVALID_IDENTIFIER', fn($r) => $r, 'INVALID_IDENTIFIER')
-        ->start(null, $config);
+        ->assert('blocked as INVALID_IDENTIFIER', fn(CTGTestState $state) => $state->getSubject(), CTGTestPredicates::equals('INVALID_IDENTIFIER'))
+        ;
 }
 
 // ── Malicious operator in where() ───────────────────────────────
@@ -656,8 +652,8 @@ $operatorPayloads = [
 ];
 
 foreach ($operatorPayloads as $label => $payload) {
-    CTGTest::init("injection — where() operator with {$label}")
-        ->stage('attempt', function($_) use ($payload) {
+    $pipelines[] = CTGTest::init("injection — where() operator with {$label}")
+        ->stage('attempt', function(CTGTestState $state) use ($payload){
             try {
                 CTGDBQuery::from('guitars')->where('make', $payload, 'x', 'str');
                 return 'NOT BLOCKED';
@@ -665,15 +661,15 @@ foreach ($operatorPayloads as $label => $payload) {
                 return $e->type;
             }
         })
-        ->assert('blocked as INVALID_OPERATOR', fn($r) => $r, 'INVALID_OPERATOR')
-        ->start(null, $config);
+        ->assert('blocked as INVALID_OPERATOR', fn(CTGTestState $state) => $state->getSubject(), CTGTestPredicates::equals('INVALID_OPERATOR'))
+        ;
 }
 
 // ── Malicious column in orderBy() ───────────────────────────────
 
 foreach ($columnPayloads as $label => $payload) {
-    CTGTest::init("injection — orderBy() with {$label}")
-        ->stage('attempt', function($_) use ($payload) {
+    $pipelines[] = CTGTest::init("injection — orderBy() with {$label}")
+        ->stage('attempt', function(CTGTestState $state) use ($payload){
             try {
                 CTGDBQuery::from('guitars')->orderBy($payload);
                 return 'NOT BLOCKED';
@@ -681,8 +677,8 @@ foreach ($columnPayloads as $label => $payload) {
                 return $e->type;
             }
         })
-        ->assert('blocked as INVALID_IDENTIFIER', fn($r) => $r, 'INVALID_IDENTIFIER')
-        ->start(null, $config);
+        ->assert('blocked as INVALID_IDENTIFIER', fn(CTGTestState $state) => $state->getSubject(), CTGTestPredicates::equals('INVALID_IDENTIFIER'))
+        ;
 }
 
 // ── Malicious direction in orderBy() ────────────────────────────
@@ -699,8 +695,8 @@ $sortDirPayloads = [
 ];
 
 foreach ($sortDirPayloads as $label => $payload) {
-    CTGTest::init("injection — orderBy() direction with {$label}")
-        ->stage('attempt', function($_) use ($payload) {
+    $pipelines[] = CTGTest::init("injection — orderBy() direction with {$label}")
+        ->stage('attempt', function(CTGTestState $state) use ($payload){
             try {
                 CTGDBQuery::from('guitars')->orderBy('make', $payload);
                 return 'NOT BLOCKED';
@@ -708,15 +704,15 @@ foreach ($sortDirPayloads as $label => $payload) {
                 return $e->type;
             }
         })
-        ->assert('blocked as INVALID_SORT', fn($r) => $r, 'INVALID_SORT')
-        ->start(null, $config);
+        ->assert('blocked as INVALID_SORT', fn(CTGTestState $state) => $state->getSubject(), CTGTestPredicates::equals('INVALID_SORT'))
+        ;
 }
 
 // ── Malicious column in groupBy() ───────────────────────────────
 
 foreach ($columnPayloads as $label => $payload) {
-    CTGTest::init("injection — groupBy() with {$label}")
-        ->stage('attempt', function($_) use ($payload) {
+    $pipelines[] = CTGTest::init("injection — groupBy() with {$label}")
+        ->stage('attempt', function(CTGTestState $state) use ($payload){
             try {
                 CTGDBQuery::from('guitars')->groupBy($payload);
                 return 'NOT BLOCKED';
@@ -724,15 +720,15 @@ foreach ($columnPayloads as $label => $payload) {
                 return $e->type;
             }
         })
-        ->assert('blocked as INVALID_IDENTIFIER', fn($r) => $r, 'INVALID_IDENTIFIER')
-        ->start(null, $config);
+        ->assert('blocked as INVALID_IDENTIFIER', fn(CTGTestState $state) => $state->getSubject(), CTGTestPredicates::equals('INVALID_IDENTIFIER'))
+        ;
 }
 
 // ── Malicious join table ────────────────────────────────────────
 
 foreach ($identifierPayloads as $label => $payload) {
-    CTGTest::init("injection — join() table with {$label}")
-        ->stage('attempt', function($_) use ($payload) {
+    $pipelines[] = CTGTest::init("injection — join() table with {$label}")
+        ->stage('attempt', function(CTGTestState $state) use ($payload){
             try {
                 CTGDBQuery::from('guitars')->join($payload, 'inner', ['guitars.id' => 'pickups.guitar_id']);
                 return 'NOT BLOCKED';
@@ -740,8 +736,8 @@ foreach ($identifierPayloads as $label => $payload) {
                 return $e->type;
             }
         })
-        ->assert('blocked as INVALID_IDENTIFIER', fn($r) => $r, 'INVALID_IDENTIFIER')
-        ->start(null, $config);
+        ->assert('blocked as INVALID_IDENTIFIER', fn(CTGTestState $state) => $state->getSubject(), CTGTestPredicates::equals('INVALID_IDENTIFIER'))
+        ;
 }
 
 // ── Malicious join type ─────────────────────────────────────────
@@ -759,8 +755,8 @@ $joinTypePayloads = [
 ];
 
 foreach ($joinTypePayloads as $label => $payload) {
-    CTGTest::init("injection — join() type with {$label}")
-        ->stage('attempt', function($_) use ($payload) {
+    $pipelines[] = CTGTest::init("injection — join() type with {$label}")
+        ->stage('attempt', function(CTGTestState $state) use ($payload){
             try {
                 CTGDBQuery::from('guitars')->join('pickups', $payload, ['guitars.id' => 'pickups.guitar_id']);
                 return 'NOT BLOCKED';
@@ -768,8 +764,8 @@ foreach ($joinTypePayloads as $label => $payload) {
                 return $e->type;
             }
         })
-        ->assert('blocked as INVALID_JOIN_TYPE', fn($r) => $r, 'INVALID_JOIN_TYPE')
-        ->start(null, $config);
+        ->assert('blocked as INVALID_JOIN_TYPE', fn(CTGTestState $state) => $state->getSubject(), CTGTestPredicates::equals('INVALID_JOIN_TYPE'))
+        ;
 }
 
 // ── Malicious ON column in join() ───────────────────────────────
@@ -784,8 +780,8 @@ $onPayloads = [
 ];
 
 foreach ($onPayloads as $label => $payload) {
-    CTGTest::init("injection — join() ON left column with {$label}")
-        ->stage('attempt', function($_) use ($payload) {
+    $pipelines[] = CTGTest::init("injection — join() ON left column with {$label}")
+        ->stage('attempt', function(CTGTestState $state) use ($payload){
             try {
                 CTGDBQuery::from('guitars')->join('pickups', 'inner', [$payload => 'pickups.guitar_id']);
                 return 'NOT BLOCKED';
@@ -793,13 +789,13 @@ foreach ($onPayloads as $label => $payload) {
                 return $e->type;
             }
         })
-        ->assert('blocked as INVALID_IDENTIFIER', fn($r) => $r, 'INVALID_IDENTIFIER')
-        ->start(null, $config);
+        ->assert('blocked as INVALID_IDENTIFIER', fn(CTGTestState $state) => $state->getSubject(), CTGTestPredicates::equals('INVALID_IDENTIFIER'))
+        ;
 }
 
 foreach ($onPayloads as $label => $payload) {
-    CTGTest::init("injection — join() ON right column with {$label}")
-        ->stage('attempt', function($_) use ($payload) {
+    $pipelines[] = CTGTest::init("injection — join() ON right column with {$label}")
+        ->stage('attempt', function(CTGTestState $state) use ($payload){
             try {
                 CTGDBQuery::from('guitars')->join('pickups', 'inner', ['guitars.id' => $payload]);
                 return 'NOT BLOCKED';
@@ -807,6 +803,8 @@ foreach ($onPayloads as $label => $payload) {
                 return $e->type;
             }
         })
-        ->assert('blocked as INVALID_IDENTIFIER', fn($r) => $r, 'INVALID_IDENTIFIER')
-        ->start(null, $config);
+        ->assert('blocked as INVALID_IDENTIFIER', fn(CTGTestState $state) => $state->getSubject(), CTGTestPredicates::equals('INVALID_IDENTIFIER'))
+        ;
 }
+
+return $pipelines;

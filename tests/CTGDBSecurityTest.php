@@ -1,18 +1,20 @@
 <?php
 declare(strict_types=1);
 
-require_once __DIR__ . '/../vendor/autoload.php';
 
 use CTG\Test\CTGTest;
+use CTG\Test\CTGTestState;
+use CTG\Test\Predicates\CTGTestPredicates;
 use CTG\DB\CTGDB;
 use CTG\DB\CTGDBError;
 use CTG\DB\CTGDBQuery;
+
+$pipelines = [];
 
 // Security tests — SQL injection mitigation across all attack surfaces
 // These tests verify that no user-controlled input can alter SQL structure.
 // Requires a running MariaDB with guitars/pickups test data.
 
-$config = ['output' => 'console'];
 
 $dbHost = getenv('DB_HOST') ?: 'db';
 $dbName = getenv('DB_NAME') ?: 'ctg_staging';
@@ -63,9 +65,10 @@ $tablePayloads = [
 ];
 
 foreach ($tablePayloads as $label => $payload) {
-    CTGTest::init("table injection — {$label}")
-        ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
-        ->stage('attempt read', function($db) use ($payload) {
+    $pipelines[] = CTGTest::init("table injection — {$label}")
+        ->stage('connect', fn(CTGTestState $state) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
+        ->stage('attempt read', function(CTGTestState $state) use ($payload){
+            $db = $state->getSubject();
             try {
                 $db->read($payload);
                 return 'NOT BLOCKED';
@@ -73,14 +76,15 @@ foreach ($tablePayloads as $label => $payload) {
                 return $e->type;
             }
         })
-        ->assert('blocked', fn($r) => $r !== 'NOT BLOCKED', true)
-        ->start(null, $config);
+        ->assert('blocked', fn(CTGTestState $state) => $state->getSubject() !== 'NOT BLOCKED', CTGTestPredicates::isTrue())
+        ;
 }
 
 foreach (['create', 'update', 'delete'] as $method) {
-    CTGTest::init("table injection — {$method} with DROP TABLE")
-        ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
-        ->stage('attempt', function($db) use ($method) {
+    $pipelines[] = CTGTest::init("table injection — {$method} with DROP TABLE")
+        ->stage('connect', fn(CTGTestState $state) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
+        ->stage('attempt', function(CTGTestState $state) use ($method){
+            $db = $state->getSubject();
             try {
                 match($method) {
                     'create' => $db->create('guitars; DROP TABLE guitars;--', ['make' => 'x']),
@@ -92,16 +96,16 @@ foreach (['create', 'update', 'delete'] as $method) {
                 return $e->type;
             }
         })
-        ->assert('blocked', fn($r) => $r !== 'NOT BLOCKED', true)
-        ->start(null, $config);
+        ->assert('blocked', fn(CTGTestState $state) => $state->getSubject() !== 'NOT BLOCKED', CTGTestPredicates::isTrue())
+        ;
 }
 
 // Verify table still exists after all injection attempts
-CTGTest::init('table injection — guitars table survived')
-    ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
-    ->stage('execute', fn($db) => $db->run('SELECT COUNT(*) as cnt FROM guitars'))
-    ->assert('table exists and has data', fn($r) => (int)$r[0]['cnt'] >= 9, true)
-    ->start(null, $config);
+$pipelines[] = CTGTest::init('table injection — guitars table survived')
+    ->stage('connect', fn(CTGTestState $state) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
+    ->stage('execute', fn(CTGTestState $state) => $state->getSubject()->run('SELECT COUNT(*) as cnt FROM guitars'))
+    ->assert('table exists and has data', fn(CTGTestState $state) => (int)$state->getSubject()[0]['cnt'] >= 9, CTGTestPredicates::isTrue())
+    ;
 
 // ═══════════════════════════════════════════════════════════════
 // COLUMN NAME INJECTION
@@ -124,9 +128,10 @@ $columnPayloads = [
 ];
 
 foreach ($columnPayloads as $label => $payload) {
-    CTGTest::init("column injection — create with {$label}")
-        ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
-        ->stage('attempt', function($db) use ($payload) {
+    $pipelines[] = CTGTest::init("column injection — create with {$label}")
+        ->stage('connect', fn(CTGTestState $state) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
+        ->stage('attempt', function(CTGTestState $state) use ($payload){
+            $db = $state->getSubject();
             try {
                 $db->create('guitars', [$payload => 'injected']);
                 return 'NOT BLOCKED';
@@ -134,14 +139,15 @@ foreach ($columnPayloads as $label => $payload) {
                 return 'BLOCKED';
             }
         })
-        ->assert('blocked', fn($r) => $r, 'BLOCKED')
-        ->start(null, $config);
+        ->assert('blocked', fn(CTGTestState $state) => $state->getSubject(), CTGTestPredicates::equals('BLOCKED'))
+        ;
 }
 
 foreach ($columnPayloads as $label => $payload) {
-    CTGTest::init("column injection — update SET with {$label}")
-        ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
-        ->stage('attempt', function($db) use ($payload) {
+    $pipelines[] = CTGTest::init("column injection — update SET with {$label}")
+        ->stage('connect', fn(CTGTestState $state) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
+        ->stage('attempt', function(CTGTestState $state) use ($payload){
+            $db = $state->getSubject();
             try {
                 $db->update('guitars', [$payload => 'injected'], ['id' => ['type' => 'int', 'value' => 1]]);
                 return 'NOT BLOCKED';
@@ -149,13 +155,13 @@ foreach ($columnPayloads as $label => $payload) {
                 return 'BLOCKED';
             }
         })
-        ->assert('blocked', fn($r) => $r, 'BLOCKED')
-        ->start(null, $config);
+        ->assert('blocked', fn(CTGTestState $state) => $state->getSubject(), CTGTestPredicates::equals('BLOCKED'))
+        ;
 }
 
 foreach ($columnPayloads as $label => $payload) {
-    CTGTest::init("column injection — WHERE key with {$label}")
-        ->stage('attempt', function($_) use ($payload) {
+    $pipelines[] = CTGTest::init("column injection — WHERE key with {$label}")
+        ->stage('attempt', function(CTGTestState $state) use ($payload){
             try {
                 CTGDBQuery::from('guitars')->where($payload, '=', 'Fender', 'str');
                 return 'NOT BLOCKED';
@@ -163,8 +169,8 @@ foreach ($columnPayloads as $label => $payload) {
                 return 'BLOCKED';
             }
         })
-        ->assert('blocked', fn($r) => $r, 'BLOCKED')
-        ->start(null, $config);
+        ->assert('blocked', fn(CTGTestState $state) => $state->getSubject(), CTGTestPredicates::equals('BLOCKED'))
+        ;
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -198,50 +204,51 @@ $valuePayloads = [
 ];
 
 foreach ($valuePayloads as $label => $payload) {
-    CTGTest::init("value injection — read WHERE with {$label}")
-        ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
-        ->stage('execute', function($db) use ($payload) {
+    $pipelines[] = CTGTest::init("value injection — read WHERE with {$label}")
+        ->stage('connect', fn(CTGTestState $state) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
+        ->stage('execute', function(CTGTestState $state) use ($payload){
+            $db = $state->getSubject();
             $result = $db->read('guitars', [
                 'where' => ['make' => ['type' => 'str', 'value' => $payload]]
             ]);
             return $result;
         })
-        ->assert('returns empty — payload treated as literal data', fn($r) => count($r), 0)
-        ->start(null, $config);
+        ->assert('returns empty — payload treated as literal data', fn(CTGTestState $state) => count($state->getSubject()), CTGTestPredicates::equals(0))
+        ;
 }
 
 // Verify values with injection payloads can round-trip through create/read/delete
-CTGTest::init('value injection — payload stored and retrieved as literal data')
-    ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
-    ->stage('create', fn($db) => [
-        'db' => $db,
-        'id' => $db->create('guitars', [
+$pipelines[] = CTGTest::init('value injection — payload stored and retrieved as literal data')
+    ->stage('connect', fn(CTGTestState $state) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
+    ->stage('create', fn(CTGTestState $state) => [
+        'db' => $state->getSubject(),
+        'id' => $state->getSubject()->create('guitars', [
             'make' => ['type' => 'str', 'value' => "'; DROP TABLE guitars;--"],
             'model' => ['type' => 'str', 'value' => "\" OR \"1\"=\"1"],
             'color' => ['type' => 'str', 'value' => "' UNION SELECT * FROM information_schema.tables--"],
             'year_purchased' => ['type' => 'int', 'value' => 2025]
         ])
     ])
-    ->stage('read back', fn($r) => [
-        'db' => $r['db'],
-        'id' => $r['id'],
-        'row' => $r['db']->read('guitars', [
-            'where' => ['id' => ['type' => 'int', 'value' => (int)$r['id']]]
+    ->stage('read back', fn(CTGTestState $state) => [
+        'db' => $state->getSubject()['db'],
+        'id' => $state->getSubject()['id'],
+        'row' => $state->getSubject()['db']->read('guitars', [
+            'where' => ['id' => ['type' => 'int', 'value' => (int)$state->getSubject()['id']]]
         ])[0]
     ])
-    ->assert('make stored literally', fn($r) => $r['row']['make'], "'; DROP TABLE guitars;--")
-    ->assert('model stored literally', fn($r) => $r['row']['model'], "\" OR \"1\"=\"1")
-    ->stage('cleanup', fn($r) => $r['db']->delete('guitars', [
-        'id' => ['type' => 'int', 'value' => (int)$r['id']]
+    ->assert('make stored literally', fn(CTGTestState $state) => $state->getSubject()['row']['make'], CTGTestPredicates::equals("'; DROP TABLE guitars;--"))
+    ->assert('model stored literally', fn(CTGTestState $state) => $state->getSubject()['row']['model'], CTGTestPredicates::equals("\" OR \"1\"=\"1"))
+    ->stage('cleanup', fn(CTGTestState $state) => $state->getSubject()['db']->delete('guitars', [
+        'id' => ['type' => 'int', 'value' => (int)$state->getSubject()['id']]
     ]))
-    ->start(null, $config);
+    ;
 
 // Verify table survived all value injection attempts
-CTGTest::init('value injection — guitars table survived')
-    ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
-    ->stage('execute', fn($db) => $db->run('SELECT COUNT(*) as cnt FROM guitars'))
-    ->assert('table exists and has data', fn($r) => (int)$r[0]['cnt'] >= 9, true)
-    ->start(null, $config);
+$pipelines[] = CTGTest::init('value injection — guitars table survived')
+    ->stage('connect', fn(CTGTestState $state) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
+    ->stage('execute', fn(CTGTestState $state) => $state->getSubject()->run('SELECT COUNT(*) as cnt FROM guitars'))
+    ->assert('table exists and has data', fn(CTGTestState $state) => (int)$state->getSubject()[0]['cnt'] >= 9, CTGTestPredicates::isTrue())
+    ;
 
 // ═══════════════════════════════════════════════════════════════
 // JOIN TYPE INJECTION
@@ -261,8 +268,8 @@ $joinPayloads = [
 ];
 
 foreach ($joinPayloads as $label => $payload) {
-    CTGTest::init("join type injection — {$label}")
-        ->stage('attempt', function($_) use ($payload) {
+    $pipelines[] = CTGTest::init("join type injection — {$label}")
+        ->stage('attempt', function(CTGTestState $state) use ($payload){
             try {
                 CTGDBQuery::from('guitars')->join('pickups', $payload, ['guitars.id' => 'pickups.guitar_id']);
                 return 'NOT BLOCKED';
@@ -270,8 +277,8 @@ foreach ($joinPayloads as $label => $payload) {
                 return $e->type;
             }
         })
-        ->assert('blocked as INVALID_JOIN_TYPE', fn($r) => $r, 'INVALID_JOIN_TYPE')
-        ->start(null, $config);
+        ->assert('blocked as INVALID_JOIN_TYPE', fn(CTGTestState $state) => $state->getSubject(), CTGTestPredicates::equals('INVALID_JOIN_TYPE'))
+        ;
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -291,9 +298,10 @@ $sortDirPayloads = [
 ];
 
 foreach ($sortDirPayloads as $label => $payload) {
-    CTGTest::init("sort direction injection — {$label}")
-        ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
-        ->stage('attempt', function($db) use ($payload) {
+    $pipelines[] = CTGTest::init("sort direction injection — {$label}")
+        ->stage('connect', fn(CTGTestState $state) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
+        ->stage('attempt', function(CTGTestState $state) use ($payload){
+            $db = $state->getSubject();
             try {
                 $db->paginate('guitars', [
                     'sort' => 'id',
@@ -304,8 +312,8 @@ foreach ($sortDirPayloads as $label => $payload) {
                 return $e->type;
             }
         })
-        ->assert('blocked as INVALID_SORT', fn($r) => $r, 'INVALID_SORT')
-        ->start(null, $config);
+        ->assert('blocked as INVALID_SORT', fn(CTGTestState $state) => $state->getSubject(), CTGTestPredicates::equals('INVALID_SORT'))
+        ;
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -314,55 +322,57 @@ foreach ($sortDirPayloads as $label => $payload) {
 // stored payload doesn't become SQL when read back
 // ═══════════════════════════════════════════════════════════════
 
-CTGTest::init('second-order injection — stored payload does not execute on read')
-    ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
-    ->stage('store payload', fn($db) => [
-        'db' => $db,
-        'id' => $db->create('guitars', [
+$pipelines[] = CTGTest::init('second-order injection — stored payload does not execute on read')
+    ->stage('connect', fn(CTGTestState $state) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
+    ->stage('store payload', fn(CTGTestState $state) => [
+        'db' => $state->getSubject(),
+        'id' => $state->getSubject()->create('guitars', [
             'make' => ['type' => 'str', 'value' => "' OR '1'='1"],
             'model' => ['type' => 'str', 'value' => 'Injection Test'],
             'color' => ['type' => 'str', 'value' => 'Red'],
             'year_purchased' => ['type' => 'int', 'value' => 2025]
         ])
     ])
-    ->stage('read with stored value as filter', fn($ctx) => [
-        'db' => $ctx['db'],
-        'id' => $ctx['id'],
-        'rows' => $ctx['db']->read('guitars', [
+    ->stage('read with stored value as filter', fn(CTGTestState $state) => [
+        'db' => $state->getSubject()['db'],
+        'id' => $state->getSubject()['id'],
+        'rows' => $state->getSubject()['db']->read('guitars', [
             'where' => ['make' => ['type' => 'str', 'value' => "' OR '1'='1"]]
         ])
     ])
-    ->assert('returns exactly 1 row (the one we stored)', fn($r) => count($r['rows']), 1)
-    ->assert('not all rows', fn($r) => count($r['rows']) < 9, true)
-    ->stage('cleanup', fn($r) => $r['db']->delete('guitars', [
-        'id' => ['type' => 'int', 'value' => (int)$r['id']]
+    ->assert('returns exactly 1 row (the one we stored)', fn(CTGTestState $state) => count($state->getSubject()['rows']), CTGTestPredicates::equals(1))
+    ->assert('not all rows', fn(CTGTestState $state) => count($state->getSubject()['rows']) < 9, CTGTestPredicates::isTrue())
+    ->stage('cleanup', fn(CTGTestState $state) => $state->getSubject()['db']->delete('guitars', [
+        'id' => ['type' => 'int', 'value' => (int)$state->getSubject()['id']]
     ]))
-    ->start(null, $config);
+    ;
 
 // ═══════════════════════════════════════════════════════════════
 // INTEGER TYPE COERCION
 // Ensure integer parameters can't be abused with string payloads
 // ═══════════════════════════════════════════════════════════════
 
-CTGTest::init('type coercion — int type enforced on bind')
-    ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
-    ->stage('execute', function($db) {
+$pipelines[] = CTGTest::init('type coercion — int type enforced on bind')
+    ->stage('connect', fn(CTGTestState $state) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
+    ->stage('execute', function(CTGTestState $state) {
+            $db = $state->getSubject();
         // PDO with emulated prepares off will enforce int type
         $result = $db->read('guitars', [
             'where' => ['id' => ['type' => 'int', 'value' => 1]]
         ]);
         return count($result);
     })
-    ->assert('returns exactly 1', fn($r) => $r, 1)
-    ->start(null, $config);
+    ->assert('returns exactly 1', fn(CTGTestState $state) => $state->getSubject(), CTGTestPredicates::equals(1))
+    ;
 
 // ═══════════════════════════════════════════════════════════════
 // BATCH INJECTION — Multiple vectors in one request
 // ═══════════════════════════════════════════════════════════════
 
-CTGTest::init('batch injection — multiple injection vectors at once')
-    ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
-    ->stage('attempt', function($db) {
+$pipelines[] = CTGTest::init('batch injection — multiple injection vectors at once')
+    ->stage('connect', fn(CTGTestState $state) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
+    ->stage('attempt', function(CTGTestState $state) {
+            $db = $state->getSubject();
         $blocked = 0;
         $attacks = [
             fn() => $db->read("guitars; DROP TABLE guitars;--"),
@@ -380,8 +390,8 @@ CTGTest::init('batch injection — multiple injection vectors at once')
         }
         return $blocked;
     })
-    ->assert('all 5 attacks blocked', fn($r) => $r, 5)
-    ->start(null, $config);
+    ->assert('all 5 attacks blocked', fn(CTGTestState $state) => $state->getSubject(), CTGTestPredicates::equals(5))
+    ;
 
 // ═══════════════════════════════════════════════════════════════
 // SORT COLUMN INJECTION (paginate)
@@ -401,9 +411,10 @@ $sortColPayloads = [
 ];
 
 foreach ($sortColPayloads as $label => $payload) {
-    CTGTest::init("sort column injection — {$label}")
-        ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
-        ->stage('attempt', function($db) use ($payload) {
+    $pipelines[] = CTGTest::init("sort column injection — {$label}")
+        ->stage('connect', fn(CTGTestState $state) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
+        ->stage('attempt', function(CTGTestState $state) use ($payload){
+            $db = $state->getSubject();
             try {
                 $db->paginate('guitars', [
                     'sort' => $payload,
@@ -415,8 +426,8 @@ foreach ($sortColPayloads as $label => $payload) {
                 return $e->type;
             }
         })
-        ->assert('blocked', fn($r) => $r !== 'NOT BLOCKED', true)
-        ->start(null, $config);
+        ->assert('blocked', fn(CTGTestState $state) => $state->getSubject() !== 'NOT BLOCKED', CTGTestPredicates::isTrue())
+        ;
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -434,8 +445,8 @@ $onPayloads = [
 ];
 
 foreach ($onPayloads as $label => $payload) {
-    CTGTest::init("join on column injection — {$label}")
-        ->stage('attempt', function($_) use ($payload) {
+    $pipelines[] = CTGTest::init("join on column injection — {$label}")
+        ->stage('attempt', function(CTGTestState $state) use ($payload){
             try {
                 CTGDBQuery::from('guitars')->join('pickups', 'inner', [$payload => 'pickups.guitar_id']);
                 return 'NOT BLOCKED';
@@ -443,8 +454,8 @@ foreach ($onPayloads as $label => $payload) {
                 return 'BLOCKED';
             }
         })
-        ->assert('blocked', fn($r) => $r, 'BLOCKED')
-        ->start(null, $config);
+        ->assert('blocked', fn(CTGTestState $state) => $state->getSubject(), CTGTestPredicates::equals('BLOCKED'))
+        ;
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -461,8 +472,8 @@ $orderPayloads = [
 ];
 
 foreach ($orderPayloads as $label => $payload) {
-    CTGTest::init("order clause injection — {$label}")
-        ->stage('attempt', function($_) use ($payload) {
+    $pipelines[] = CTGTest::init("order clause injection — {$label}")
+        ->stage('attempt', function(CTGTestState $state) use ($payload){
             try {
                 CTGDBQuery::from('guitars')->orderBy($payload);
                 return 'NOT BLOCKED';
@@ -470,42 +481,44 @@ foreach ($orderPayloads as $label => $payload) {
                 return 'BLOCKED';
             }
         })
-        ->assert('blocked', fn($r) => $r, 'BLOCKED')
-        ->start(null, $config);
+        ->assert('blocked', fn(CTGTestState $state) => $state->getSubject(), CTGTestPredicates::equals('BLOCKED'))
+        ;
 }
 
 // Verify valid order clauses still work
-CTGTest::init('order clause — valid single column ASC')
-    ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
-    ->stage('execute', fn($db) => $db->read(
+$pipelines[] = CTGTest::init('order clause — valid single column ASC')
+    ->stage('connect', fn(CTGTestState $state) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
+    ->stage('execute', fn(CTGTestState $state) => $state->getSubject()->read(
         CTGDBQuery::from('guitars')->orderBy('year_purchased', 'DESC')
     ))
-    ->assert('most recent first', fn($r) => $r[0]['make'], 'Schecter')
-    ->start(null, $config);
+    ->assert('most recent first', fn(CTGTestState $state) => $state->getSubject()[0]['make'], CTGTestPredicates::equals('Schecter'))
+    ;
 
-CTGTest::init('order clause — valid column without direction')
-    ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
-    ->stage('execute', fn($db) => $db->read(
+$pipelines[] = CTGTest::init('order clause — valid column without direction')
+    ->stage('connect', fn(CTGTestState $state) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
+    ->stage('execute', fn(CTGTestState $state) => $state->getSubject()->read(
         CTGDBQuery::from('guitars')->orderBy('make')
     ))
-    ->assert('returns rows', fn($r) => count($r), 9)
-    ->start(null, $config);
+    ->assert('returns rows', fn(CTGTestState $state) => count($state->getSubject()), CTGTestPredicates::equals(9))
+    ;
 
 // Final integrity check — the database is intact after all attacks
-CTGTest::init('final integrity — guitars table intact after all attacks')
-    ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
-    ->stage('execute', fn($db) => [
-        'count' => (int)$db->run('SELECT COUNT(*) as cnt FROM guitars')[0]['cnt'],
-        'columns' => $db->run("SHOW COLUMNS FROM guitars"),
+$pipelines[] = CTGTest::init('final integrity — guitars table intact after all attacks')
+    ->stage('connect', fn(CTGTestState $state) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
+    ->stage('execute', fn(CTGTestState $state) => [
+        'count' => (int)$state->getSubject()->run('SELECT COUNT(*) as cnt FROM guitars')[0]['cnt'],
+        'columns' => $state->getSubject()->run("SHOW COLUMNS FROM guitars"),
     ])
-    ->assert('still has 9 rows', fn($r) => $r['count'], 9)
-    ->assert('still has 5 columns', fn($r) => count($r['columns']), 5)
-    ->start(null, $config);
+    ->assert('still has 9 rows', fn(CTGTestState $state) => $state->getSubject()['count'], CTGTestPredicates::equals(9))
+    ->assert('still has 5 columns', fn(CTGTestState $state) => count($state->getSubject()['columns']), CTGTestPredicates::equals(5))
+    ;
 
-CTGTest::init('final integrity — pickups table intact after all attacks')
-    ->stage('connect', fn($_) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
-    ->stage('execute', fn($db) => [
-        'count' => (int)$db->run('SELECT COUNT(*) as cnt FROM pickups')[0]['cnt'],
+$pipelines[] = CTGTest::init('final integrity — pickups table intact after all attacks')
+    ->stage('connect', fn(CTGTestState $state) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
+    ->stage('execute', fn(CTGTestState $state) => [
+        'count' => (int)$state->getSubject()->run('SELECT COUNT(*) as cnt FROM pickups')[0]['cnt'],
     ])
-    ->assert('still has pickup data', fn($r) => $r['count'] > 0, true)
-    ->start(null, $config);
+    ->assert('still has pickup data', fn(CTGTestState $state) => $state->getSubject()['count'] > 0, CTGTestPredicates::isTrue())
+    ;
+
+return $pipelines;
