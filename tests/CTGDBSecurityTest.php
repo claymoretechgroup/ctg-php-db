@@ -76,7 +76,7 @@ foreach ($tablePayloads as $label => $payload) {
                 return $e->type;
             }
         })
-        ->assert('blocked', fn(CTGTestState $state) => $state->getSubject() !== 'NOT BLOCKED', CTGTestPredicates::isTrue())
+        ->assert('blocked as INVALID_IDENTIFIER', fn(CTGTestState $state) => $state->getSubject(), CTGTestPredicates::equals('INVALID_IDENTIFIER'))
         ;
 }
 
@@ -96,7 +96,7 @@ foreach (['create', 'update', 'delete'] as $method) {
                 return $e->type;
             }
         })
-        ->assert('blocked', fn(CTGTestState $state) => $state->getSubject() !== 'NOT BLOCKED', CTGTestPredicates::isTrue())
+        ->assert('blocked as INVALID_IDENTIFIER', fn(CTGTestState $state) => $state->getSubject(), CTGTestPredicates::equals('INVALID_IDENTIFIER'))
         ;
 }
 
@@ -135,11 +135,11 @@ foreach ($columnPayloads as $label => $payload) {
             try {
                 $db->create('guitars', [$payload => 'injected']);
                 return 'NOT BLOCKED';
-            } catch (\Exception $e) {
-                return 'BLOCKED';
+            } catch (CTGDBError $e) {
+                return $e->type;
             }
         })
-        ->assert('blocked', fn(CTGTestState $state) => $state->getSubject(), CTGTestPredicates::equals('BLOCKED'))
+        ->assert('blocked as INVALID_IDENTIFIER', fn(CTGTestState $state) => $state->getSubject(), CTGTestPredicates::equals('INVALID_IDENTIFIER'))
         ;
 }
 
@@ -151,11 +151,11 @@ foreach ($columnPayloads as $label => $payload) {
             try {
                 $db->update('guitars', [$payload => 'injected'], ['id' => ['type' => 'int', 'value' => 1]]);
                 return 'NOT BLOCKED';
-            } catch (\Exception $e) {
-                return 'BLOCKED';
+            } catch (CTGDBError $e) {
+                return $e->type;
             }
         })
-        ->assert('blocked', fn(CTGTestState $state) => $state->getSubject(), CTGTestPredicates::equals('BLOCKED'))
+        ->assert('blocked as INVALID_IDENTIFIER', fn(CTGTestState $state) => $state->getSubject(), CTGTestPredicates::equals('INVALID_IDENTIFIER'))
         ;
 }
 
@@ -165,11 +165,11 @@ foreach ($columnPayloads as $label => $payload) {
             try {
                 CTGDBQuery::from('guitars')->where($payload, '=', 'Fender', 'str');
                 return 'NOT BLOCKED';
-            } catch (\Exception $e) {
-                return 'BLOCKED';
+            } catch (CTGDBError $e) {
+                return $e->type;
             }
         })
-        ->assert('blocked', fn(CTGTestState $state) => $state->getSubject(), CTGTestPredicates::equals('BLOCKED'))
+        ->assert('blocked as INVALID_IDENTIFIER', fn(CTGTestState $state) => $state->getSubject(), CTGTestPredicates::equals('INVALID_IDENTIFIER'))
         ;
 }
 
@@ -373,24 +373,27 @@ $pipelines[] = CTGTest::init('batch injection — multiple injection vectors at 
     ->stage('connect', fn(CTGTestState $state) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
     ->stage('attempt', function(CTGTestState $state) {
             $db = $state->getSubject();
-        $blocked = 0;
         $attacks = [
-            fn() => $db->read("guitars; DROP TABLE guitars;--"),
-            fn() => $db->create("guitars; DROP TABLE guitars;--", ['make' => 'x']),
-            fn() => CTGDBQuery::from('guitars')->where('make', 'DROP', 'x', 'str'),
-            fn() => CTGDBQuery::from('guitars')->join('pickups', 'EVIL', ['guitars.id' => 'pickups.guitar_id']),
-            fn() => $db->paginate('guitars', ['sort' => 'id', 'order' => 'EVIL']),
+            'read with injected table'       => [fn() => $db->read("guitars; DROP TABLE guitars;--"),                                               'INVALID_IDENTIFIER'],
+            'create with injected table'     => [fn() => $db->create("guitars; DROP TABLE guitars;--", ['make' => 'x']),                            'INVALID_IDENTIFIER'],
+            'where with injected operator'   => [fn() => CTGDBQuery::from('guitars')->where('make', 'DROP', 'x', 'str'),                            'INVALID_OPERATOR'],
+            'join with injected type'        => [fn() => CTGDBQuery::from('guitars')->join('pickups', 'EVIL', ['guitars.id' => 'pickups.guitar_id']),'INVALID_JOIN_TYPE'],
+            'paginate with injected sort'    => [fn() => $db->paginate('guitars', ['sort' => 'id', 'order' => 'EVIL']),                             'INVALID_SORT'],
         ];
-        foreach ($attacks as $attack) {
+        $outcomes = [];
+        foreach ($attacks as $label => [$attack, $expectedType]) {
             try {
                 $attack();
-            } catch (\Exception $e) {
-                $blocked++;
+                $outcomes[$label] = 'NOT BLOCKED';
+            } catch (CTGDBError $e) {
+                $outcomes[$label] = $e->type === $expectedType
+                    ? 'BLOCKED'
+                    : "WRONG TYPE: got {$e->type}, expected {$expectedType}";
             }
         }
-        return $blocked;
+        return $outcomes;
     })
-    ->assert('all 5 attacks blocked', fn(CTGTestState $state) => $state->getSubject(), CTGTestPredicates::equals(5))
+    ->assert('all 5 attacks blocked with expected CTGDBError types', fn(CTGTestState $state) => array_unique(array_values($state->getSubject())), CTGTestPredicates::equals(['BLOCKED']))
     ;
 
 // ═══════════════════════════════════════════════════════════════
@@ -426,7 +429,7 @@ foreach ($sortColPayloads as $label => $payload) {
                 return $e->type;
             }
         })
-        ->assert('blocked', fn(CTGTestState $state) => $state->getSubject() !== 'NOT BLOCKED', CTGTestPredicates::isTrue())
+        ->assert('blocked as INVALID_IDENTIFIER', fn(CTGTestState $state) => $state->getSubject(), CTGTestPredicates::equals('INVALID_IDENTIFIER'))
         ;
 }
 
@@ -450,11 +453,11 @@ foreach ($onPayloads as $label => $payload) {
             try {
                 CTGDBQuery::from('guitars')->join('pickups', 'inner', [$payload => 'pickups.guitar_id']);
                 return 'NOT BLOCKED';
-            } catch (\Exception $e) {
-                return 'BLOCKED';
+            } catch (CTGDBError $e) {
+                return $e->type;
             }
         })
-        ->assert('blocked', fn(CTGTestState $state) => $state->getSubject(), CTGTestPredicates::equals('BLOCKED'))
+        ->assert('blocked as INVALID_IDENTIFIER', fn(CTGTestState $state) => $state->getSubject(), CTGTestPredicates::equals('INVALID_IDENTIFIER'))
         ;
 }
 
@@ -477,11 +480,11 @@ foreach ($orderPayloads as $label => $payload) {
             try {
                 CTGDBQuery::from('guitars')->orderBy($payload);
                 return 'NOT BLOCKED';
-            } catch (\Exception $e) {
-                return 'BLOCKED';
+            } catch (CTGDBError $e) {
+                return $e->type;
             }
         })
-        ->assert('blocked', fn(CTGTestState $state) => $state->getSubject(), CTGTestPredicates::equals('BLOCKED'))
+        ->assert('blocked as INVALID_IDENTIFIER', fn(CTGTestState $state) => $state->getSubject(), CTGTestPredicates::equals('INVALID_IDENTIFIER'))
         ;
 }
 
@@ -499,18 +502,29 @@ $pipelines[] = CTGTest::init('order clause — valid column without direction')
     ->stage('execute', fn(CTGTestState $state) => $state->getSubject()->read(
         CTGDBQuery::from('guitars')->orderBy('make')
     ))
-    ->assert('returns rows', fn(CTGTestState $state) => count($state->getSubject()), CTGTestPredicates::equals(9))
+    ->assert('returns rows', fn(CTGTestState $state) => count($state->getSubject()), CTGTestPredicates::greaterThan(0))
     ;
 
-// Final integrity check — the database is intact after all attacks
+// Final integrity check — the database is intact after all attacks.
+// Row count uses >= baseline rather than == because other tests in the
+// run may insert ephemeral rows; the invariant is "table survived, not
+// dropped or truncated", not "count unchanged." Column assertions check
+// that the expected columns are still present by name, which catches
+// destructive schema changes without breaking on legitimate additions.
 $pipelines[] = CTGTest::init('final integrity — guitars table intact after all attacks')
     ->stage('connect', fn(CTGTestState $state) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
     ->stage('execute', fn(CTGTestState $state) => [
         'count' => (int)$state->getSubject()->run('SELECT COUNT(*) as cnt FROM guitars')[0]['cnt'],
-        'columns' => $state->getSubject()->run("SHOW COLUMNS FROM guitars"),
+        'column_names' => array_map(
+            fn($row) => $row['Field'],
+            $state->getSubject()->run("SHOW COLUMNS FROM guitars")
+        ),
     ])
-    ->assert('still has 9 rows', fn(CTGTestState $state) => $state->getSubject()['count'], CTGTestPredicates::equals(9))
-    ->assert('still has 5 columns', fn(CTGTestState $state) => count($state->getSubject()['columns']), CTGTestPredicates::equals(5))
+    ->assert('still has seed rows', fn(CTGTestState $state) => $state->getSubject()['count'] >= 9, CTGTestPredicates::isTrue())
+    ->assert('expected columns still present', fn(CTGTestState $state) => array_diff(
+        ['id', 'make', 'model', 'color', 'year_purchased'],
+        $state->getSubject()['column_names']
+    ), CTGTestPredicates::equals([]))
     ;
 
 $pipelines[] = CTGTest::init('final integrity — pickups table intact after all attacks')

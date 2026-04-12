@@ -32,28 +32,40 @@ $pipelines[] = CTGTest::init('compose — basic read pipeline')
         ])
     ])
     ->stage('execute', fn(CTGTestState $state) => $state->getSubject()['pipeline']())
-    ->assert('returns 9 guitars', fn(CTGTestState $state) => count($state->getSubject()), CTGTestPredicates::equals(9))
+    ->assert('returned rows', fn(CTGTestState $state) => count($state->getSubject()), CTGTestPredicates::greaterThan(0))
     ;
 
 $pipelines[] = CTGTest::init('compose — multi-step pipeline')
     ->stage('connect', fn(CTGTestState $state) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
-    ->stage('build and execute', fn(CTGTestState $state) => $state->getSubject()->compose([
-        fn($_, $db) => $db->read('guitars'),
-        fn($guitars, $_) => array_filter($guitars, fn($g) => $g['make'] === 'Fender'),
-        fn($fenders, $_) => count($fenders),
-    ])())
-    ->assert('counted 3 Fenders', fn(CTGTestState $state) => $state->getSubject(), CTGTestPredicates::equals(3))
+    ->stage('compose and baseline', fn(CTGTestState $state) => [
+        'composed' => $state->getSubject()->compose([
+            fn($_, $db) => $db->read('guitars'),
+            fn($guitars, $_) => array_filter($guitars, fn($g) => $g['make'] === 'Fender'),
+            fn($fenders, $_) => count($fenders),
+        ])(),
+        'baseline' => count($state->getSubject()->read('guitars', [
+            'where' => ['make' => ['type' => 'str', 'value' => 'Fender']]
+        ])),
+    ])
+    ->assert('compose result matches direct query', fn(CTGTestState $state) => $state->getSubject()['composed'] === $state->getSubject()['baseline'], CTGTestPredicates::isTrue())
+    ->assert('result is positive', fn(CTGTestState $state) => $state->getSubject()['composed'], CTGTestPredicates::greaterThan(0))
     ;
 
 $pipelines[] = CTGTest::init('compose — pipeline with initial value')
     ->stage('connect', fn(CTGTestState $state) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
-    ->stage('build and execute', fn(CTGTestState $state) => $state->getSubject()->compose([
-        fn($make, $db) => $db->read('guitars', [
-            'where' => ['make' => ['type' => 'str', 'value' => $make]]
-        ]),
-        fn($guitars, $_) => count($guitars),
-    ])('Fender'))
-    ->assert('counted 3 Fenders', fn(CTGTestState $state) => $state->getSubject(), CTGTestPredicates::equals(3))
+    ->stage('compose and baseline', fn(CTGTestState $state) => [
+        'composed' => $state->getSubject()->compose([
+            fn($make, $db) => $db->read('guitars', [
+                'where' => ['make' => ['type' => 'str', 'value' => $make]]
+            ]),
+            fn($guitars, $_) => count($guitars),
+        ])('Fender'),
+        'baseline' => count($state->getSubject()->read('guitars', [
+            'where' => ['make' => ['type' => 'str', 'value' => 'Fender']]
+        ])),
+    ])
+    ->assert('compose result matches direct query', fn(CTGTestState $state) => $state->getSubject()['composed'] === $state->getSubject()['baseline'], CTGTestPredicates::isTrue())
+    ->assert('result is positive', fn(CTGTestState $state) => $state->getSubject()['composed'], CTGTestPredicates::greaterThan(0))
     ;
 
 $pipelines[] = CTGTest::init('compose — pipeline with DB at multiple steps')
@@ -75,7 +87,7 @@ $pipelines[] = CTGTest::init('compose — pipeline with DB at multiple steps')
             'pickup_count' => count($data['pickups']),
         ],
     ])())
-    ->assert('guitar_count is 9', fn(CTGTestState $state) => $state->getSubject()['guitar_count'], CTGTestPredicates::equals(9))
+    ->assert('guitar_count > 0', fn(CTGTestState $state) => $state->getSubject()['guitar_count'], CTGTestPredicates::greaterThan(0))
     ->assert('pickup_count > 0', fn(CTGTestState $state) => $state->getSubject()['pickup_count'] > 0, CTGTestPredicates::isTrue())
     ;
 
@@ -316,11 +328,9 @@ $pipelines[] = CTGTest::init('compose — error propagates from pipeline')
             return 'no exception';
         } catch (CTGDBError $e) {
             return $e->type;
-        } catch (\Exception $e) {
-            return 'other: ' . get_class($e);
         }
     })
-    ->assert('threw CTGDBError', fn(CTGTestState $state) => is_string($state->getSubject()) && $state->getSubject() !== 'no exception', CTGTestPredicates::isTrue())
+    ->assert('threw QUERY_FAILED', fn(CTGTestState $state) => $state->getSubject(), CTGTestPredicates::equals('QUERY_FAILED'))
     ;
 
 return $pipelines;

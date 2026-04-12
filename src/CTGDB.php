@@ -211,8 +211,17 @@ class CTGDB {
     }
 
     // :: STRING, ARRAY, ARRAY -> INT
-    // Update rows matching WHERE conditions, returns affected count
+    // Update rows matching WHERE conditions, returns affected count.
+    // Empty $where is rejected to prevent accidental full-table updates;
+    // the caller must pass at least one predicate.
     public function update(string $table, array $data, array $where): int {
+        if (empty($where)) {
+            throw new CTGDBError('EMPTY_WHERE_UPDATE',
+                "update() requires a WHERE clause",
+                ['table' => $table]
+            );
+        }
+
         $table = $this->validateIdentifier($table);
         $setParts = [];
         $values = [];

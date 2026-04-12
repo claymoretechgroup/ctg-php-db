@@ -45,7 +45,7 @@ return [
         ->stage('connect', fn(CTGTestState $s) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
         ->stage('execute', fn(CTGTestState $s) => $s->getSubject()->run('SELECT * FROM guitars'))
         ->assert('returns array', fn(CTGTestState $s) => $s->getSubject(), CTGTestPredicates::isType('array'))
-        ->assert('has 9 guitars', fn(CTGTestState $s) => $s->getSubject(), CTGTestPredicates::hasCount(9))
+        ->assert('returned rows', fn(CTGTestState $s) => count($s->getSubject()), CTGTestPredicates::greaterThan(0))
         ->assert('first has make', fn(CTGTestState $s) => isset($s->getSubject()[0]['make']), CTGTestPredicates::isTrue()),
 
     CTGTest::init('run — parameterized positional')
@@ -87,7 +87,7 @@ return [
             []
         ))
         ->assert('first is Ibanez', fn(CTGTestState $s) => $s->getSubject()[0], CTGTestPredicates::equals('Ibanez'))
-        ->assert('returns 9 makes', fn(CTGTestState $s) => $s->getSubject(), CTGTestPredicates::hasCount(9)),
+        ->assert('accumulated rows', fn(CTGTestState $s) => count($s->getSubject()), CTGTestPredicates::greaterThan(0)),
 
     CTGTest::init('run — fold keys by id')
         ->stage('connect', fn(CTGTestState $s) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
@@ -101,12 +101,16 @@ return [
 
     CTGTest::init('run — fold counts')
         ->stage('connect', fn(CTGTestState $s) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
-        ->stage('execute', fn(CTGTestState $s) => $s->getSubject()->run(
-            'SELECT * FROM guitars',
-            fn($record, $count) => $count + 1,
-            0
-        ))
-        ->assert('count is 9', fn(CTGTestState $s) => $s->getSubject(), CTGTestPredicates::equals(9)),
+        ->stage('fold and baseline', fn(CTGTestState $s) => [
+            'folded' => $s->getSubject()->run(
+                'SELECT * FROM guitars',
+                fn($record, $count) => $count + 1,
+                0
+            ),
+            'baseline' => count($s->getSubject()->run('SELECT * FROM guitars')),
+        ])
+        ->assert('fold count equals row count', fn(CTGTestState $s) => $s->getSubject()['folded'] === $s->getSubject()['baseline'], CTGTestPredicates::isTrue())
+        ->assert('fold count is positive', fn(CTGTestState $s) => $s->getSubject()['folded'], CTGTestPredicates::greaterThan(0)),
 
     // ── create() ────────────────────────────────────────────────────
 
@@ -151,7 +155,7 @@ return [
     CTGTest::init('read via CTGDBQuery — all rows')
         ->stage('connect', fn(CTGTestState $s) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
         ->stage('execute', fn(CTGTestState $s) => $s->getSubject()->read(CTGDBQuery::from('guitars')))
-        ->assert('returns 9 guitars', fn(CTGTestState $s) => $s->getSubject(), CTGTestPredicates::hasCount(9)),
+        ->assert('returned rows', fn(CTGTestState $s) => count($s->getSubject()), CTGTestPredicates::greaterThan(0)),
 
     CTGTest::init('read via CTGDBQuery — with columns')
         ->stage('connect', fn(CTGTestState $s) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
@@ -248,6 +252,21 @@ return [
             ['id' => ['type' => 'int', 'value' => 99999]]
         ))
         ->assert('affected 0 rows', fn(CTGTestState $s) => $s->getSubject(), CTGTestPredicates::equals(0)),
+
+    CTGTest::init('update — empty where throws')
+        ->stage('connect', fn(CTGTestState $s) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
+        ->stage('attempt', function(CTGTestState $s) {
+            try {
+                $s->getSubject()->update('guitars',
+                    ['color' => ['type' => 'str', 'value' => 'AccidentalBlast']],
+                    []
+                );
+                return 'no exception';
+            } catch (CTGDBError $e) {
+                return $e->type;
+            }
+        })
+        ->assert('throws EMPTY_WHERE_UPDATE', fn(CTGTestState $s) => $s->getSubject(), CTGTestPredicates::equals('EMPTY_WHERE_UPDATE')),
 
     // ── delete() ────────────────────────────────────────────────────
 

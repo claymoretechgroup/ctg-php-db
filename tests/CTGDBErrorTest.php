@@ -120,6 +120,7 @@ return [
             CTGDBError::lookup('INVALID_IDENTIFIER'),
             CTGDBError::lookup('INVALID_AGGREGATE'),
             CTGDBError::lookup('INVALID_QUERY_STATE'),
+            CTGDBError::lookup('EMPTY_WHERE_UPDATE'),
         ])
         ->assert('INVALID_TABLE', fn(CTGTestState $s) => $s->getSubject()[0], CTGTestPredicates::equals(3000))
         ->assert('INVALID_COLUMN', fn(CTGTestState $s) => $s->getSubject()[1], CTGTestPredicates::equals(3001))
@@ -130,7 +131,8 @@ return [
         ->assert('EMPTY_WHERE_DELETE', fn(CTGTestState $s) => $s->getSubject()[6], CTGTestPredicates::equals(3006))
         ->assert('INVALID_IDENTIFIER', fn(CTGTestState $s) => $s->getSubject()[7], CTGTestPredicates::equals(3007))
         ->assert('INVALID_AGGREGATE', fn(CTGTestState $s) => $s->getSubject()[8], CTGTestPredicates::equals(3008))
-        ->assert('INVALID_QUERY_STATE', fn(CTGTestState $s) => $s->getSubject()[9], CTGTestPredicates::equals(3009)),
+        ->assert('INVALID_QUERY_STATE', fn(CTGTestState $s) => $s->getSubject()[9], CTGTestPredicates::equals(3009))
+        ->assert('EMPTY_WHERE_UPDATE', fn(CTGTestState $s) => $s->getSubject()[10], CTGTestPredicates::equals(3010)),
 
     // ── Chainable on() handler ──────────────────────────────────────
 

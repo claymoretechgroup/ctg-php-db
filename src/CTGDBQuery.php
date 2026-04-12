@@ -49,6 +49,18 @@ class CTGDBQuery {
         $op = self::validateOperator($operator);
 
         if ($op === 'IN' || $op === 'NOT IN') {
+            if (!is_array($value)) {
+                throw new CTGDBError('INVALID_ARGUMENT',
+                    "{$op} operator requires an array value",
+                    ['column' => $column, 'operator' => $op, 'value_type' => gettype($value)]
+                );
+            }
+            if (count($value) === 0) {
+                throw new CTGDBError('INVALID_ARGUMENT',
+                    "{$op} operator requires a non-empty array",
+                    ['column' => $column, 'operator' => $op]
+                );
+            }
             $placeholders = implode(', ', array_fill(0, count($value), '?'));
             $sql = "{$quotedCol} {$op} ({$placeholders})";
             $values = [];
@@ -59,6 +71,14 @@ class CTGDBQuery {
         } elseif ($op === 'IS' || $op === 'IS NOT') {
             $this->_where[] = ['sql' => "{$quotedCol} {$op} NULL", 'values' => []];
         } elseif ($op === 'BETWEEN') {
+            if (!is_array($value) || count($value) !== 2) {
+                throw new CTGDBError('INVALID_ARGUMENT',
+                    "BETWEEN operator requires a two-element array [low, high]",
+                    ['column' => $column, 'operator' => 'BETWEEN',
+                     'value_type' => gettype($value),
+                     'count' => is_array($value) ? count($value) : null]
+                );
+            }
             $sql = "{$quotedCol} BETWEEN ? AND ?";
             $values = [];
             $values[] = $type !== null ? ['type' => $type, 'value' => $value[0]] : $value[0];

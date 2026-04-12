@@ -27,6 +27,7 @@ class CTGDBError extends \Exception {
         'INVALID_IDENTIFIER'   => 3007,
         'INVALID_AGGREGATE'    => 3008,
         'INVALID_QUERY_STATE'  => 3009,
+        'EMPTY_WHERE_UPDATE'   => 3010,
     ];
 
     /* Instance Properties */

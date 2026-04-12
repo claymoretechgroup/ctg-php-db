@@ -229,6 +229,104 @@ $pipelines[] = CTGTest::init('where — invalid operator throws INVALID_OPERATOR
     ->assert('throws INVALID_OPERATOR', fn(CTGTestState $state) => $state->getSubject(), CTGTestPredicates::equals('INVALID_OPERATOR'))
     ;
 
+// ── IN / NOT IN / BETWEEN shape validation ──────────────────────
+
+$pipelines[] = CTGTest::init('where — IN with non-array value throws INVALID_ARGUMENT')
+    ->stage('attempt', function(CTGTestState $state) {
+        try {
+            CTGDBQuery::from('guitars')->where('make', 'IN', 'Fender', 'str');
+            return 'no exception';
+        } catch (CTGDBError $e) {
+            return $e->type;
+        }
+    })
+    ->assert('throws INVALID_ARGUMENT', fn(CTGTestState $state) => $state->getSubject(), CTGTestPredicates::equals('INVALID_ARGUMENT'))
+    ;
+
+$pipelines[] = CTGTest::init('where — IN with empty array throws INVALID_ARGUMENT')
+    ->stage('attempt', function(CTGTestState $state) {
+        try {
+            CTGDBQuery::from('guitars')->where('make', 'IN', [], 'str');
+            return 'no exception';
+        } catch (CTGDBError $e) {
+            return $e->type;
+        }
+    })
+    ->assert('throws INVALID_ARGUMENT', fn(CTGTestState $state) => $state->getSubject(), CTGTestPredicates::equals('INVALID_ARGUMENT'))
+    ;
+
+$pipelines[] = CTGTest::init('where — NOT IN with non-array value throws INVALID_ARGUMENT')
+    ->stage('attempt', function(CTGTestState $state) {
+        try {
+            CTGDBQuery::from('guitars')->where('make', 'NOT IN', 'Fender', 'str');
+            return 'no exception';
+        } catch (CTGDBError $e) {
+            return $e->type;
+        }
+    })
+    ->assert('throws INVALID_ARGUMENT', fn(CTGTestState $state) => $state->getSubject(), CTGTestPredicates::equals('INVALID_ARGUMENT'))
+    ;
+
+$pipelines[] = CTGTest::init('where — NOT IN with empty array throws INVALID_ARGUMENT')
+    ->stage('attempt', function(CTGTestState $state) {
+        try {
+            CTGDBQuery::from('guitars')->where('make', 'NOT IN', [], 'str');
+            return 'no exception';
+        } catch (CTGDBError $e) {
+            return $e->type;
+        }
+    })
+    ->assert('throws INVALID_ARGUMENT', fn(CTGTestState $state) => $state->getSubject(), CTGTestPredicates::equals('INVALID_ARGUMENT'))
+    ;
+
+$pipelines[] = CTGTest::init('where — BETWEEN with non-array value throws INVALID_ARGUMENT')
+    ->stage('attempt', function(CTGTestState $state) {
+        try {
+            CTGDBQuery::from('guitars')->where('year_purchased', 'BETWEEN', 2020, 'int');
+            return 'no exception';
+        } catch (CTGDBError $e) {
+            return $e->type;
+        }
+    })
+    ->assert('throws INVALID_ARGUMENT', fn(CTGTestState $state) => $state->getSubject(), CTGTestPredicates::equals('INVALID_ARGUMENT'))
+    ;
+
+$pipelines[] = CTGTest::init('where — BETWEEN with one-element array throws INVALID_ARGUMENT')
+    ->stage('attempt', function(CTGTestState $state) {
+        try {
+            CTGDBQuery::from('guitars')->where('year_purchased', 'BETWEEN', [2020], 'int');
+            return 'no exception';
+        } catch (CTGDBError $e) {
+            return $e->type;
+        }
+    })
+    ->assert('throws INVALID_ARGUMENT', fn(CTGTestState $state) => $state->getSubject(), CTGTestPredicates::equals('INVALID_ARGUMENT'))
+    ;
+
+$pipelines[] = CTGTest::init('where — BETWEEN with three-element array throws INVALID_ARGUMENT')
+    ->stage('attempt', function(CTGTestState $state) {
+        try {
+            CTGDBQuery::from('guitars')->where('year_purchased', 'BETWEEN', [2020, 2022, 2025], 'int');
+            return 'no exception';
+        } catch (CTGDBError $e) {
+            return $e->type;
+        }
+    })
+    ->assert('throws INVALID_ARGUMENT', fn(CTGTestState $state) => $state->getSubject(), CTGTestPredicates::equals('INVALID_ARGUMENT'))
+    ;
+
+$pipelines[] = CTGTest::init('where — BETWEEN with empty array throws INVALID_ARGUMENT')
+    ->stage('attempt', function(CTGTestState $state) {
+        try {
+            CTGDBQuery::from('guitars')->where('year_purchased', 'BETWEEN', [], 'int');
+            return 'no exception';
+        } catch (CTGDBError $e) {
+            return $e->type;
+        }
+    })
+    ->assert('throws INVALID_ARGUMENT', fn(CTGTestState $state) => $state->getSubject(), CTGTestPredicates::equals('INVALID_ARGUMENT'))
+    ;
+
 // ═══════════════════════════════════════════════════════════════
 // JOINs
 // ═══════════════════════════════════════════════════════════════
@@ -410,6 +508,30 @@ $pipelines[] = CTGTest::init('offset — produces OFFSET clause')
 $pipelines[] = CTGTest::init('limit + offset — both present')
     ->stage('build', fn(CTGTestState $state) => CTGDBQuery::from('guitars')->limit(10)->offset(20)->toStatement())
     ->assert('sql', fn(CTGTestState $state) => $state->getSubject()['sql'], CTGTestPredicates::equals('SELECT * FROM `guitars` LIMIT 10 OFFSET 20'))
+    ;
+
+$pipelines[] = CTGTest::init('limit — negative value throws INVALID_ARGUMENT')
+    ->stage('attempt', function(CTGTestState $state) {
+        try {
+            CTGDBQuery::from('guitars')->limit(-1);
+            return 'no exception';
+        } catch (CTGDBError $e) {
+            return $e->type;
+        }
+    })
+    ->assert('throws INVALID_ARGUMENT', fn(CTGTestState $state) => $state->getSubject(), CTGTestPredicates::equals('INVALID_ARGUMENT'))
+    ;
+
+$pipelines[] = CTGTest::init('offset — negative value throws INVALID_ARGUMENT')
+    ->stage('attempt', function(CTGTestState $state) {
+        try {
+            CTGDBQuery::from('guitars')->offset(-1);
+            return 'no exception';
+        } catch (CTGDBError $e) {
+            return $e->type;
+        }
+    })
+    ->assert('throws INVALID_ARGUMENT', fn(CTGTestState $state) => $state->getSubject(), CTGTestPredicates::equals('INVALID_ARGUMENT'))
     ;
 
 $pipelines[] = CTGTest::init('page — page 1 default perPage')
