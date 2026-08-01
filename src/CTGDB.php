@@ -7,7 +7,9 @@ namespace CTG\DB;
 class CTGDB {
 
     /* Instance Properties */
-    private \PDO $_pdo;
+    private ?\PDO $_pdo;
+    private bool $_persistent;
+    private bool $_invalidated = false;
 
     // CONSTRUCTOR :: STRING, STRING, STRING, STRING, ARRAY -> $this
     // Creates a new database connection via PDO
@@ -21,6 +23,7 @@ class CTGDB {
         $charset = $options['charset'] ?? 'utf8mb4';
         $timeout = $options['timeout'] ?? null;
         $persistent = $options['persistent'] ?? false;
+        $this->_persistent = (bool)$persistent;
 
         $dsn = "mysql:host={$host};dbname={$database};charset={$charset}";
 
@@ -77,6 +80,9 @@ class CTGDB {
         ?callable    $fn = null,
         mixed        $accumulator = []
     ): mixed {
+        if ($this->_invalidated || !$this->_pdo instanceof \PDO) {
+            throw new CTGDBError('CONNECTION_FAILED', 'Database connection has been invalidated');
+        }
         if (is_string($query)) {
             $sql = $query;
             $values = [];
@@ -141,6 +147,25 @@ class CTGDB {
             return $this->_pdo->lastInsertId();
         }
         return $stmt->rowCount();
+    }
+
+    // :: VOID -> VOID
+    // Permanently invalidates this nonpersistent connection and closes its PDO handle.
+    public function invalidate(): void {
+        $this->_invalidated = true;
+        $this->_pdo = null;
+    }
+
+    // :: VOID -> BOOL
+    // Returns whether this connection object has been permanently invalidated.
+    public function isInvalidated(): bool {
+        return $this->_invalidated;
+    }
+
+    // :: VOID -> BOOL
+    // Returns whether PDO persistent-connection pooling was requested.
+    public function isPersistent(): bool {
+        return $this->_persistent;
     }
 
     // :: STRING, ARRAY -> INT|STRING

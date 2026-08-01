@@ -44,6 +44,24 @@ Then require the package:
 composer require ctg/php-db
 ```
 
+## Connection lifecycle
+
+Version 1.1 adds an explicit fail-closed lifecycle for security-sensitive
+transaction coordinators:
+
+```php
+if ($db->isPersistent()) {
+    throw new RuntimeException('This operation requires a nonpersistent connection');
+}
+
+$db->invalidate();
+```
+
+`invalidate()` closes the PDO handle and permanently poisons the CTGDB object;
+all later queries fail with `CONNECTION_FAILED`. Call it when rollback cannot be
+confirmed or commit acknowledgement is indeterminate. Reject persistent
+connections before starting transactions that require this guarantee.
+
 ## Examples
 
 ### Connecting

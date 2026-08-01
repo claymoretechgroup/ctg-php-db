@@ -39,6 +39,27 @@ return [
         })
         ->assert('throws connection error', fn(CTGTestState $s) => $s->getSubject(), CTGTestPredicates::satisfies(fn($v) => in_array($v, ['CONNECTION_FAILED', 'AUTH_FAILED'], true))),
 
+    CTGTest::init('connection invalidation closes and permanently poisons the object')
+        ->stage('connect', fn(CTGTestState $s) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
+        ->stage('invalidate', function(CTGTestState $s) {
+            $db = $s->getSubject();
+            $db->invalidate();
+            try {
+                $db->run('SELECT 1');
+                $rejected = false;
+            } catch (CTGDBError $error) {
+                $rejected = $error->type === 'CONNECTION_FAILED';
+            }
+            return [
+                'invalidated' => $db->isInvalidated(),
+                'persistent' => $db->isPersistent(),
+                'rejected' => $rejected,
+            ];
+        })
+        ->assert('reports invalidated', fn(CTGTestState $s) => $s->getSubject()['invalidated'], CTGTestPredicates::isTrue())
+        ->assert('default connection is nonpersistent', fn(CTGTestState $s) => $s->getSubject()['persistent'], CTGTestPredicates::isFalse())
+        ->assert('later queries fail closed', fn(CTGTestState $s) => $s->getSubject()['rejected'], CTGTestPredicates::isTrue()),
+
     // ── run() — raw queries ─────────────────────────────────────────
 
     CTGTest::init('run — plain SQL string')
