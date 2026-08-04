@@ -1,75 +1,98 @@
 # CTGDB
 
-Minimal PDO database class with a single low-level primitive (`run`)
-and CRUD convenience methods built on top. All queries use PDO prepared
-statements. Identifiers are regex-validated. Keywords are allowlisted.
+Main database API operating over a composed `CTGDBConn`, with safe CRUD
+methods, materialized execution through `run()`, and incremental row handling
+through `process()`.
+`CTGDBConn` owns PDO construction, guarded statement execution, connection
+state, transactions, and invalidation. All queries use PDO prepared statements.
+Identifiers are regex-validated. Keywords are allowlisted.
 Read queries should use `CTGDBQuery` (see [CTGDBQuery.md](CTGDBQuery.md))
 for safe-by-default, structured query building — it validates all
 identifiers, allowlists all operators, and parameterizes all values by
 construction.
 
-### Properties
-
-| Property | Type | Description |
-|----------|------|-------------|
-| _pdo | \PDO | Underlying PDO connection instance |
-
----
-
 ## Construction
 
-### CONSTRUCTOR :: STRING, STRING, STRING, STRING, ARRAY -> ctgdb
+### CONSTRUCTOR :: ctgdbConn -> ctgdb
 
-Creates a new database connection. Internally builds a PDO instance
-with `ERRMODE_EXCEPTION`, `FETCH_ASSOC`, and `EMULATE_PREPARES => false`.
-Options support `charset` (default `utf8mb4`), `timeout`, and
-`persistent`. Throws CTGDBError on connection failure.
+Creates the main database API over an existing `CTGDBConn`. This makes
+connection ownership explicit and permits a connection to be constructed or
+managed separately without making `CTGDB` a connection subtype.
 
 ```php
-$db = new CTGDB('localhost', 'myapp', 'user', 'pass');
-
-$db = new CTGDB('localhost', 'myapp', 'user', 'pass', [
+$connection = CTGDBConn::init([
+    'host' => 'localhost',
+    'database' => 'myapp',
+    'username' => 'user',
+    'password' => 'pass',
     'charset' => 'utf8mb4',
     'timeout' => 5,
     'persistent' => false,
 ]);
+$db = new CTGDB($connection);
 ```
 
-### CTGDB.connect :: STRING, STRING, STRING, STRING, ARRAY -> ctgdb
+### CTGDB.init :: ["host" => STRING, "database" => STRING, "username" => STRING, "password" => STRING, "charset"? => STRING, "timeout"? => ?INT, "persistent"? => BOOL] -> ctgdb
 
-Static factory method. Returns `new static(...)` so subclasses inherit
-the factory correctly.
+Convenience factory that creates a validated `CTGDBConn` from the config and
+passes it to `new static(...)`. This is the concise path for callers that only
+need the query and CRUD API. Callers that need transaction or lifecycle control
+should construct and retain a `CTGDBConn`, then inject it through the
+constructor.
 
 ```php
-$db = CTGDB::connect('localhost', 'myapp', 'user', 'pass');
+$db = CTGDB::init([
+    'host' => 'localhost',
+    'database' => 'myapp',
+    'username' => 'user',
+    'password' => 'pass',
+]);
 ```
 
 ---
 
 ## Instance Methods
 
-### ctgdb.run :: STRING|ARRAY, ?(ARRAY, MIXED -> MIXED), MIXED -> MIXED
+### ctgdb.run :: STRING|ctgdbQuery, ARRAY -> ARRAY|INT|STRING
 
-The low-level primitive. Accepts a plain SQL string or a query array
-with `sql` and `values` keys. Values support both typed form
-(`['type' => 'int', 'value' => 42]`) and untyped form (PHP type
-inference). For SELECT queries, folds over results using the optional
-callback and accumulator. For INSERT, returns last insert ID. For
-UPDATE/DELETE, returns affected row count. Does not validate
-identifiers — callers own the SQL structure.
+Executes a raw SQL string with optional bound values or a `CTGDBQuery` and
+returns its complete result. Values support both typed form
+(`['type' => 'int', 'value' => 42]`) and PHP type inference. SELECT queries
+return an array of rows, INSERT returns the last insert ID, and UPDATE/DELETE
+return affected-row count. Raw SQL identifiers are the caller's responsibility.
 
 ```php
 $users = $db->run('SELECT * FROM users');
 
-$admins = $db->run([
-    'sql' => 'SELECT * FROM users WHERE role = ?',
-    'values' => [['type' => 'str', 'value' => 'admin']]
-]);
+$admins = $db->run(
+    'SELECT * FROM users WHERE role = ?',
+    [['type' => 'str', 'value' => 'admin']]
+);
 
-$emails = $db->run(
-    'SELECT email FROM users',
-    fn($record, $acc) => [...$acc, $record['email']],
-    []
+$admins = $db->run(
+    CTGDBQuery::from('users')->where('role', '=', 'admin', 'str')
+);
+```
+
+### ctgdb.process :: STRING|ctgdbQuery, (ARRAY, MIXED -> MIXED), MIXED, ARRAY -> MIXED
+
+Executes a row-producing raw SQL string or `CTGDBQuery`, passes each row and
+the current state to the processor, and returns the final state. This avoids
+materializing rows inside `CTGDB`, although memory usage still depends on what
+the processor retains and on the connection's PDO buffering mode.
+
+```php
+$emails = $db->process(
+    'SELECT email FROM users WHERE active = ?',
+    fn($record, $result) => [...$result, $record['email']],
+    [],
+    values: [true]
+);
+
+$count = $db->process(
+    CTGDBQuery::from('users')->where('active', '=', true, 'bool'),
+    fn($record, $result) => $result + 1,
+    0
 );
 ```
 
@@ -88,7 +111,7 @@ $id = $db->create('guitars', [
 ]);
 ```
 
-### ctgdb.read :: STRING|ARRAY|ctgdbQuery, ARRAY, ?(ARRAY, MIXED -> MIXED), MIXED -> MIXED
+### ctgdb.read :: STRING|ARRAY|ctgdbQuery, ARRAY -> ARRAY
 
 General-purpose read. The preferred usage is to pass a `CTGDBQuery`
 instance, which provides validated, parameterized query building with
@@ -175,86 +198,12 @@ $affected = $db->delete('pickups', [
 ]);
 ```
 
-### ctgdb.filter :: STRING, ARRAY -> ARRAY
-
-**(Deprecated)** — use `CTGDBQuery::from()->where()` instead. See
-[CTGDBQuery.md](CTGDBQuery.md).
-
-```php
-// Preferred replacement:
-$query = CTGDBQuery::from('guitars')
-    ->where('make', '=', 'Fender', 'str')
-    ->where('year_purchased', '>=', 2020, 'int');
-
-$page1 = $db->paginate($query, ['sort' => 'model', 'page' => 1]);
-$page2 = $db->paginate($query, ['page' => 2]);
-```
-
-**(Removed)** — use `CTGDBQuery::from()->where()` instead.
-
-Previously built reusable WHERE conditions. This functionality is now
-handled by `CTGDBQuery` which provides the same operator support with
-safe-by-default query construction.
-
-Supported operators: `=`, `>`, `<`, `>=`, `<=`, `!=`, `LIKE`,
-`NOT LIKE`, `IN`, `NOT IN`, `IS`, `IS NOT`, `BETWEEN`.
-
-```php
-$filter = $db->filter('guitars', [
-    'make' => ['type' => 'str', 'value' => 'Fender'],
-    'year_purchased' => ['type' => 'int', 'value' => 2020, 'op' => '>='],
-]);
-
-$page1 = $db->paginate($filter, ['sort' => 'model', 'page' => 1]);
-$page2 = $db->paginate($filter, ['page' => 2]);
-```
-
-### ctgdb.join :: STRING|ARRAY, ARRAY, ?(ARRAY, MIXED -> MIXED), MIXED -> MIXED
-
-**(Deprecated)** — use `CTGDBQuery::from()->join()` instead. See
-[CTGDBQuery.md](CTGDBQuery.md).
-
-Inner join shortcut. Delegates to `read()` with `join => 'inner'`.
-Accepts the same arguments and config options as `read()`.
-
-```php
-$db->join(['guitars', 'pickups'], [
-    'on' => [['guitars.id' => 'pickups.guitar_id']],
-    'columns' => ['guitars.model', 'pickups.type']
-]);
-```
-
-### ctgdb.leftJoin :: STRING|ARRAY, ARRAY, ?(ARRAY, MIXED -> MIXED), MIXED -> MIXED
-
-**(Deprecated)** — use `CTGDBQuery::from()->join()` instead. See
-[CTGDBQuery.md](CTGDBQuery.md).
-
-```php
-// Preferred replacement:
-$db->read(
-    CTGDBQuery::from('guitars')
-        ->join('pickups', 'left', ['guitars.id' => 'pickups.guitar_id'])
-        ->columns('guitars.model', 'pickups.position')
-);
-```
-
-Left join shortcut. Delegates to `read()` with `join => 'left'`.
-Accepts the same arguments and config options as `read()`.
-
-```php
-$db->leftJoin(['guitars', 'pickups'], [
-    'on' => [['guitars.id' => 'pickups.guitar_id']],
-    'columns' => ['guitars.model', 'pickups.position']
-]);
-```
-
-### ctgdb.paginate :: STRING|ctgdbQuery, ARRAY, ?(ARRAY, MIXED -> MIXED), MIXED -> ARRAY
+### ctgdb.paginate :: STRING|ctgdbQuery, ARRAY -> ARRAY
 
 Paginates any result set. Source is a `CTGDBQuery` instance or a table
-name string. Runs a count query and a data query, returning `data` and
-`pagination` metadata. The `total` config option skips the count query
-when the total is already known. The fold function applies to `data`
-only — pagination metadata is always present.
+name string. Runs a count query and a data query, returning materialized `data`
+and `pagination` metadata. The `total` config option skips the count query when
+the total is already known.
 
 When `$source` is a `CTGDBQuery` and `sort`/`order` are provided in
 config, they **replace** (not append to) any existing ORDER BY on the
@@ -301,17 +250,18 @@ Builds a function pipeline that threads an accumulator and the DB
 instance through each step. Each function receives
 `($accumulator, $db)`. The returned callable accepts an optional
 initial value. Nothing executes until the returned callable is invoked.
-Use `compose()` for steps that need database access. Use
-`CTGFnprog::pipe()` for pure data transforms within steps.
+Use `compose()` for steps that need database access. Standard PHP functions
+and callbacks can perform data transforms within steps without another
+library dependency.
 
 ```php
 $pipeline = $db->compose([
-    fn($_, $db) => $db->read('guitars'),
-    fn($guitars, $_) => CTGFnprog::pipe([
-        CTGFnprog::filter(fn($g) => $g['year_purchased'] >= 2020),
-        CTGFnprog::sortBy('year_purchased', 'DESC'),
-        CTGFnprog::pluck('make'),
-    ])($guitars),
+    fn($_, $db) => $db->read(
+        CTGDBQuery::from('guitars')
+            ->where('year_purchased', '>=', 2020, 'int')
+            ->orderBy('year_purchased', 'DESC')
+    ),
+    fn($guitars, $_) => array_map(fn($guitar) => $guitar['make'], $guitars),
 ]);
 
 $recentMakes = $pipeline();
@@ -323,13 +273,6 @@ $recentMakes = $pipeline();
 
 These methods are `protected` to support subclassing for
 application-specific optimization.
-
-### ctgdb.resolveType :: MIXED -> [MIXED, INT]
-
-Resolves a value to a `[value, PDO_TYPE_CONSTANT]` pair. Accepts
-typed form (`['type' => 'int', 'value' => 42]`) or untyped form
-(infers type from PHP type). Supported types: `int`, `str`, `bool`,
-`null`, `float`.
 
 ### ctgdb.buildWhere :: ARRAY -> [STRING, ARRAY]
 
@@ -364,6 +307,6 @@ Validates a filter operator against the allowlist: `=`, `>`, `<`,
 `between`. Throws `INVALID_OPERATOR`. `CTGDBQuery` uses this same
 validation for its `where()` method.
 
-### ctgdb.getPdo :: VOID -> \PDO
-
-Returns the underlying PDO instance.
+PDO access is deliberately absent from `CTGDB`. Preparation, binding,
+execution, and result consumption cross the narrow `CTGDBConn::execute()`
+boundary so a raw PDO handle or live statement cannot escape invalidation.

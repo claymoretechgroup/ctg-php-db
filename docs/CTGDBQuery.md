@@ -20,7 +20,7 @@ the explicit trust boundary.
 
 **Relationship to CTGDB:**
 - `CTGDBQuery` is a standalone class in `CTG\DB`
-- It produces statement arrays consumable by `run()`
+- It is consumed directly by `run()`, `process()`, `read()`, and `paginate()`
 - `read()` and `paginate()` accept `CTGDBQuery` instances
 - `CTGDBQuery` does not execute queries — execution is always through `CTGDB`
 
@@ -347,7 +347,7 @@ $stmt = $query->toStatement();
 //     'values' => [['type' => 'int', 'value' => 2020]]
 // ]
 
-$rows = $db->run($stmt);
+$rows = $db->run($query);
 ```
 
 **SQL generation order:**
@@ -394,18 +394,13 @@ SELECT COUNT(*) as total FROM (
 ### `read()` accepts CTGDBQuery
 
 ```php
-// :: STRING|ARRAY|ctgdbQuery, ARRAY, ?(ARRAY, MIXED -> MIXED), MIXED -> MIXED
-public function read(
-    string|array|CTGDBQuery $tables,
-    array                   $config = [],
-    ?callable               $fn = null,
-    mixed                   $accumulator = []
-): mixed;
+// :: STRING|ARRAY|ctgdbQuery, ARRAY -> ARRAY
+public function read(string|array|CTGDBQuery $tables, array $config = []): array;
 ```
 
 When `$tables` is a `CTGDBQuery`:
 - `$config` is ignored (the query object contains all configuration)
-- `toStatement()` is called and passed to `run()` with `$fn` and `$accumulator`
+- The query is passed directly to `run()` for materialized execution
 
 ```php
 $rows = $db->read(
@@ -415,11 +410,10 @@ $rows = $db->read(
         ->limit(10)
 );
 
-// With fold
-$byMake = $db->read(
+// Incremental processing uses process()
+$byMake = $db->process(
     CTGDBQuery::from('guitars'),
-    [],
-    fn($row, $acc) => array_merge($acc, [$row['make'] => $row]),
+    fn($row, $result) => $result + [$row['make'] => $row],
     []
 );
 ```
@@ -427,13 +421,8 @@ $byMake = $db->read(
 ### `paginate()` accepts CTGDBQuery
 
 ```php
-// :: STRING|ARRAY|ctgdbQuery, ARRAY, ?(ARRAY, MIXED -> MIXED), MIXED -> ARRAY
-public function paginate(
-    string|array|CTGDBQuery $source,
-    array                   $config = [],
-    ?callable               $fn = null,
-    mixed                   $accumulator = []
-): array;
+// :: STRING|ctgdbQuery, ARRAY -> ARRAY
+public function paginate(string|CTGDBQuery $source, array $config = []): array;
 ```
 
 When `$source` is a `CTGDBQuery`:
@@ -513,15 +502,6 @@ $db->read(
 ### Join query
 
 ```php
-// Old way
-$db->join(['guitars', 'pickups'], [
-    'on' => [['guitars.id' => 'pickups.guitar_id']],
-    'columns' => ['guitars.model', 'pickups.type'],
-    'where' => 'guitars.year_purchased >= ?',
-    'values' => [['type' => 'int', 'value' => 2020]]
-]);
-
-// New way
 $db->read(
     CTGDBQuery::from('guitars')
         ->join('pickups', 'inner', ['guitars.id' => 'pickups.guitar_id'])
@@ -533,14 +513,6 @@ $db->read(
 ### Pagination (replaces filter + paginate)
 
 ```php
-// Old way
-$filter = $db->filter('guitars', [
-    'make' => ['type' => 'str', 'value' => 'Fender'],
-    'year_purchased' => ['type' => 'int', 'value' => 2020, 'op' => '>=']
-]);
-$result = $db->paginate($filter, ['sort' => 'model', 'page' => 1]);
-
-// New way
 $query = CTGDBQuery::from('guitars')
     ->where('make', '=', 'Fender', 'str')
     ->where('year_purchased', '>=', 2020, 'int');
@@ -551,15 +523,6 @@ $result = $db->paginate($query, ['sort' => 'model', 'page' => 1]);
 ### Join + pagination (no more as_query)
 
 ```php
-// Old way
-$query = $db->join(['guitars', 'pickups'], [
-    'on' => [['guitars.id' => 'pickups.guitar_id']],
-    'columns' => ['guitars.*', 'pickups.type as pickup_type'],
-    'as_query' => true
-]);
-$result = $db->paginate($query, ['sort' => 'guitars.make', 'page' => 1]);
-
-// New way
 $query = CTGDBQuery::from('guitars')
     ->join('pickups', 'inner', ['guitars.id' => 'pickups.guitar_id'])
     ->columns('guitars.*', 'pickups.type as pickup_type');
@@ -576,9 +539,11 @@ $pipeline = $db->compose([
             ->where('make', '=', 'Fender', 'str')
             ->orderBy('year_purchased', 'DESC')
     ),
-    fn($guitars, $_) => CTGFnprog::pipe([
-        CTGFnprog::pick(['make', 'model', 'color']),
-    ])($guitars),
+    fn($guitars, $_) => array_map(fn($guitar) => [
+        'make' => $guitar['make'],
+        'model' => $guitar['model'],
+        'color' => $guitar['color'],
+    ], $guitars),
 ]);
 
 $result = $pipeline();
@@ -665,7 +630,7 @@ Before any release of application code built on ctg-php-db:
      Example: `$db->run('SELECT COUNT(*) FROM migrations')`
    - **Parameterized** — external input is bound via `values`, never
      interpolated into the SQL string. Safe.
-     Example: `$db->run(['sql' => 'SELECT ... WHERE col IN (SELECT ...)', 'values' => [...]])`
+     Example: `$db->run('SELECT ... WHERE col IN (SELECT ...)', [...])`
    - **Dynamic SQL** — external input influences the SQL string structure
      (table names, column names, operators, fragments). **Blocker.**
      Must be refactored to use parameterized form or `CTGDBQuery`.

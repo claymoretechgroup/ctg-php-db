@@ -3,7 +3,7 @@ declare(strict_types=1);
 
 namespace CTG\DB;
 
-// Structured query builder — produces statement arrays for CTGDB::run()
+// Structured query builder consumed directly by CTGDB::run() and process()
 class CTGDBQuery {
 
     /* Instance Properties */

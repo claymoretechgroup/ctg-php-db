@@ -19,11 +19,17 @@ $dbHost = getenv('DB_HOST') ?: 'db';
 $dbName = getenv('DB_NAME') ?: 'ctg_staging';
 $dbUser = getenv('DB_USER') ?: 'ctg_dev';
 $dbPass = getenv('DB_PASSWORD') ?: 'devpass_change_me';
+$dbConfig = fn(array $config = []): array => array_replace([
+    'host' => $dbHost,
+    'database' => $dbName,
+    'username' => $dbUser,
+    'password' => $dbPass,
+], $config);
 
 // ── compose() — basic pipeline ──────────────────────────────────
 
 $pipelines[] = CTGTest::init('compose — basic read pipeline')
-    ->stage('connect', fn(CTGTestState $state) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
+    ->stage('connect', fn(CTGTestState $state) => CTGDB::init($dbConfig()))
     ->stage('build', fn(CTGTestState $state) => [
         'db' => $state->getSubject(),
         'pipeline' => $state->getSubject()->compose([
@@ -35,7 +41,7 @@ $pipelines[] = CTGTest::init('compose — basic read pipeline')
     ;
 
 $pipelines[] = CTGTest::init('compose — multi-step pipeline')
-    ->stage('connect', fn(CTGTestState $state) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
+    ->stage('connect', fn(CTGTestState $state) => CTGDB::init($dbConfig()))
     ->stage('compose and baseline', fn(CTGTestState $state) => [
         'composed' => $state->getSubject()->compose([
             fn($_, $db) => $db->read('guitars'),
@@ -51,7 +57,7 @@ $pipelines[] = CTGTest::init('compose — multi-step pipeline')
     ;
 
 $pipelines[] = CTGTest::init('compose — pipeline with initial value')
-    ->stage('connect', fn(CTGTestState $state) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
+    ->stage('connect', fn(CTGTestState $state) => CTGDB::init($dbConfig()))
     ->stage('compose and baseline', fn(CTGTestState $state) => [
         'composed' => $state->getSubject()->compose([
             fn($make, $db) => $db->read('guitars', [
@@ -68,7 +74,7 @@ $pipelines[] = CTGTest::init('compose — pipeline with initial value')
     ;
 
 $pipelines[] = CTGTest::init('compose — pipeline with DB at multiple steps')
-    ->stage('connect', fn(CTGTestState $state) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
+    ->stage('connect', fn(CTGTestState $state) => CTGDB::init($dbConfig()))
     ->stage('build and execute', fn(CTGTestState $state) => $state->getSubject()->compose([
         fn($_, $db) => $db->read('guitars', [
             'columns' => ['id', 'make', 'model']
@@ -93,7 +99,7 @@ $pipelines[] = CTGTest::init('compose — pipeline with DB at multiple steps')
 // ── End-to-end: filter + paginate + transform ───────────────────
 
 $pipelines[] = CTGTest::init('end-to-end — CTGDBQuery + paginate')
-    ->stage('connect', fn(CTGTestState $state) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
+    ->stage('connect', fn(CTGTestState $state) => CTGDB::init($dbConfig()))
     ->stage('execute', function(CTGTestState $state) {
             $db = $state->getSubject();
         $query = CTGDBQuery::from('guitars')
@@ -111,7 +117,7 @@ $pipelines[] = CTGTest::init('end-to-end — CTGDBQuery + paginate')
     ;
 
 $pipelines[] = CTGTest::init('end-to-end — CTGDBQuery join + paginate')
-    ->stage('connect', fn(CTGTestState $state) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
+    ->stage('connect', fn(CTGTestState $state) => CTGDB::init($dbConfig()))
     ->stage('execute', function(CTGTestState $state) {
             $db = $state->getSubject();
         $query = CTGDBQuery::from('guitars')
@@ -128,7 +134,7 @@ $pipelines[] = CTGTest::init('end-to-end — CTGDBQuery join + paginate')
     ;
 
 $pipelines[] = CTGTest::init('end-to-end — CTGDBQuery join + where')
-    ->stage('connect', fn(CTGTestState $state) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
+    ->stage('connect', fn(CTGTestState $state) => CTGDB::init($dbConfig()))
     ->stage('execute', function(CTGTestState $state) {
             $db = $state->getSubject();
         return $db->read(
@@ -145,7 +151,7 @@ $pipelines[] = CTGTest::init('end-to-end — CTGDBQuery join + where')
 // ── CRUD lifecycle ──────────────────────────────────────────────
 
 $pipelines[] = CTGTest::init('end-to-end — full CRUD lifecycle')
-    ->stage('connect', fn(CTGTestState $state) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
+    ->stage('connect', fn(CTGTestState $state) => CTGDB::init($dbConfig()))
     ->stage('create', fn(CTGTestState $state) => [
         'db' => $state->getSubject(),
         'id' => $state->getSubject()->create('guitars', [
@@ -198,7 +204,7 @@ $pipelines[] = CTGTest::init('end-to-end — full CRUD lifecycle')
 // ── Error handling in pipelines ─────────────────────────────────
 
 $pipelines[] = CTGTest::init('compose — error propagates from pipeline')
-    ->stage('connect', fn(CTGTestState $state) => CTGDB::connect($dbHost, $dbName, $dbUser, $dbPass))
+    ->stage('connect', fn(CTGTestState $state) => CTGDB::init($dbConfig()))
     ->stage('execute', function(CTGTestState $state) {
             $db = $state->getSubject();
         try {

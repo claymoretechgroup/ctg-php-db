@@ -3,68 +3,16 @@ declare(strict_types=1);
 
 namespace CTG\DB;
 
-// Minimal PDO database library with fold/accumulator pattern
+// Minimal PDO database library with safe CRUD and incremental result processing
 class CTGDB {
 
     /* Instance Properties */
-    private ?\PDO $_pdo;
-    private bool $_persistent;
-    private bool $_invalidated = false;
+    private CTGDBConn $_connection; // Connection responsible for PDO access, transactions, and invalidation
 
-    // CONSTRUCTOR :: STRING, STRING, STRING, STRING, ARRAY -> $this
-    // Creates a new database connection via PDO
-    public function __construct(
-        string $host,
-        string $database,
-        string $username,
-        string $password,
-        array  $options = []
-    ) {
-        $charset = $options['charset'] ?? 'utf8mb4';
-        $timeout = $options['timeout'] ?? null;
-        $persistent = $options['persistent'] ?? false;
-        $this->_persistent = (bool)$persistent;
-
-        $dsn = "mysql:host={$host};dbname={$database};charset={$charset}";
-
-        $pdoOptions = [
-            \PDO::ATTR_ERRMODE            => \PDO::ERRMODE_EXCEPTION,
-            \PDO::ATTR_DEFAULT_FETCH_MODE => \PDO::FETCH_ASSOC,
-            \PDO::ATTR_EMULATE_PREPARES   => false,
-            \PDO::ATTR_PERSISTENT         => $persistent,
-        ];
-
-        if ($timeout !== null) {
-            $pdoOptions[\PDO::ATTR_TIMEOUT] = $timeout;
-        }
-
-        try {
-            $this->_pdo = new \PDO($dsn, $username, $password, $pdoOptions);
-        } catch (\PDOException $e) {
-            $msg = $e->getMessage();
-            $info = $e->errorInfo ?? [null, null, null];
-            $driverCode = $info[1] ?? null;
-            $sqlstate = $info[0] ?? $e->getCode();
-
-            $type = match(true) {
-                // Auth: driver codes 1045 (bad password), 1044 (no DB privilege)
-                in_array($driverCode, [1045, 1044], true) => 'AUTH_FAILED',
-                $sqlstate === '28000'                      => 'AUTH_FAILED',
-                // Timeout: driver code 2013 (lost connection), or 2002/2003 with timeout message
-                $driverCode === 2013                       => 'CONNECTION_TIMEOUT',
-                in_array($driverCode, [2002, 2003], true)
-                    && str_contains($msg, 'timed out')     => 'CONNECTION_TIMEOUT',
-                // Everything else is a connection failure
-                default                                    => 'CONNECTION_FAILED',
-            };
-            throw new CTGDBError($type, $msg, [
-                'host' => $host,
-                'database' => $database,
-                'sqlstate' => $sqlstate,
-                'driver_code' => $driverCode,
-                'original' => $e
-            ]);
-        }
+    // CONSTRUCTOR :: ctgdbConn -> $this
+    // Creates the main database API over an existing connection instance
+    public function __construct(CTGDBConn $connection) {
+        $this->_connection = $connection;
     }
 
     /**
@@ -73,99 +21,18 @@ class CTGDB {
      *
      */
 
-    // :: STRING|ARRAY, ?(ARRAY, MIXED -> MIXED), MIXED -> MIXED
-    // Execute a query with optional fold/accumulator over results
-    public function run(
-        string|array $query,
-        ?callable    $fn = null,
-        mixed        $accumulator = []
-    ): mixed {
-        if ($this->_invalidated || !$this->_pdo instanceof \PDO) {
-            throw new CTGDBError('CONNECTION_FAILED', 'Database connection has been invalidated');
-        }
-        if (is_string($query)) {
-            $sql = $query;
-            $values = [];
-        } else {
-            if (!isset($query['sql'])) {
-                throw new CTGDBError('INVALID_ARGUMENT',
-                    "Query array must contain an 'sql' key",
-                    ['keys' => array_keys($query)]
-                );
-            }
-            $sql = $query['sql'];
-            $values = $query['values'] ?? [];
-        }
-
-        try {
-            $stmt = $this->_pdo->prepare($sql);
-            $this->_bindValues($stmt, $values);
-            $stmt->execute();
-        } catch (\PDOException $e) {
-            $info = $e->errorInfo ?? [null, null, null];
-            $driverCode = $info[1] ?? null;
-            $sqlstate = $info[0] ?? (string)$e->getCode();
-
-            $type = match(true) {
-                // Duplicate entry: driver codes 1062, 1586
-                in_array($driverCode, [1062, 1586], true)
-                    => 'DUPLICATE_ENTRY',
-                // Constraint violation: FK (1451/1452/1216/1217), NOT NULL (1048), CHECK (3819/4025)
-                in_array($driverCode, [1451, 1452, 1216, 1217, 1048, 3819, 4025], true)
-                    => 'CONSTRAINT_VIOLATION',
-                // SQLSTATE fallback for any integrity constraint violation
-                $sqlstate === '23000'
-                    => 'CONSTRAINT_VIOLATION',
-                // Connection lost mid-query
-                in_array($driverCode, [2006, 2013], true)
-                    => 'CONNECTION_FAILED',
-                default
-                    => 'QUERY_FAILED',
-            };
-            throw new CTGDBError($type, $e->getMessage(), [
-                'sqlstate' => $sqlstate,
-                'driver_code' => $driverCode,
-                'query' => $sql,
-                'original' => $e
-            ]);
-        }
-
-        if ($stmt->columnCount() > 0) {
-            $result = $accumulator;
-            while ($row = $stmt->fetch()) {
-                if ($fn !== null) {
-                    $result = $fn($row, $result);
-                } else {
-                    $result[] = $row;
-                }
-            }
-            return $result;
-        }
-
-        $trimmed = strtoupper(ltrim($sql));
-        if (str_starts_with($trimmed, 'INSERT')) {
-            return $this->_pdo->lastInsertId();
-        }
-        return $stmt->rowCount();
+    // :: STRING|ctgdbQuery, ARRAY -> ARRAY|INT|STRING
+    // Executes a query and returns its complete materialized result
+    public function run(string|CTGDBQuery $query, array $values = []): array|int|string {
+        [$sql, $resolvedValues] = $this->_resolveQuery($query, $values);
+        return $this->_connection->execute($sql, $resolvedValues);
     }
 
-    // :: VOID -> VOID
-    // Permanently invalidates this nonpersistent connection and closes its PDO handle.
-    public function invalidate(): void {
-        $this->_invalidated = true;
-        $this->_pdo = null;
-    }
-
-    // :: VOID -> BOOL
-    // Returns whether this connection object has been permanently invalidated.
-    public function isInvalidated(): bool {
-        return $this->_invalidated;
-    }
-
-    // :: VOID -> BOOL
-    // Returns whether PDO persistent-connection pooling was requested.
-    public function isPersistent(): bool {
-        return $this->_persistent;
+    // :: STRING|ctgdbQuery, (ARRAY, MIXED -> MIXED), MIXED, ARRAY -> MIXED
+    // Processes query results one row at a time and returns the final state
+    public function process(string|CTGDBQuery $query, callable $processor, mixed $initial = null, array $values = []): mixed {
+        [$sql, $resolvedValues] = $this->_resolveQuery($query, $values);
+        return $this->_connection->process($sql, $processor, $initial, $resolvedValues);
     }
 
     // :: STRING, ARRAY -> INT|STRING
@@ -185,26 +52,18 @@ class CTGDB {
         $colStr = implode(', ', $columns);
         $phStr = implode(', ', $placeholders);
 
-        return $this->run([
-            'sql' => "INSERT INTO {$table} ({$colStr}) VALUES ({$phStr})",
-            'values' => $values
-        ]);
+        return $this->run("INSERT INTO {$table} ({$colStr}) VALUES ({$phStr})", $values);
     }
 
-    // :: STRING|ARRAY|ctgdbQuery, ARRAY, ?(ARRAY, MIXED -> MIXED), MIXED -> MIXED
-    // Read rows from one or more tables with optional transform
-    public function read(
-        string|array|CTGDBQuery $tables,
-        array                   $config = [],
-        ?callable               $fn = null,
-        mixed                   $accumulator = []
-    ): mixed {
+    // :: STRING|ARRAY|ctgdbQuery, ARRAY -> ARRAY
+    // Reads rows from one or more tables
+    public function read(string|array|CTGDBQuery $tables, array $config = []): array {
         if ($tables instanceof CTGDBQuery) {
-            return $this->run($tables->toStatement(), $fn, $accumulator);
+            return $this->run($tables);
         }
 
         if (is_array($tables)) {
-            return $this->_readJoin($tables, $config, $fn, $accumulator);
+            return $this->_readJoin($tables, $config);
         }
 
         $table = $this->validateIdentifier($tables);
@@ -232,7 +91,7 @@ class CTGDB {
             $sql .= " LIMIT " . (int)$config['limit'];
         }
 
-        return $this->run(['sql' => $sql, 'values' => $values], $fn, $accumulator);
+        return $this->run($sql, $values);
     }
 
     // :: STRING, ARRAY, ARRAY -> INT
@@ -260,10 +119,7 @@ class CTGDB {
         $values = array_merge($values, $whereValues);
 
         $setStr = implode(', ', $setParts);
-        return $this->run([
-            'sql' => "UPDATE {$table} SET {$setStr}{$whereSql}",
-            'values' => $values
-        ]);
+        return $this->run("UPDATE {$table} SET {$setStr}{$whereSql}", $values);
     }
 
     // :: STRING, ARRAY -> INT
@@ -279,20 +135,12 @@ class CTGDB {
         $table = $this->validateIdentifier($table);
         [$whereSql, $values] = $this->buildWhere($where);
 
-        return $this->run([
-            'sql' => "DELETE FROM {$table}{$whereSql}",
-            'values' => $values
-        ]);
+        return $this->run("DELETE FROM {$table}{$whereSql}", $values);
     }
 
-    // :: STRING|ARRAY|ctgdbQuery, ARRAY, ?(ARRAY, MIXED -> MIXED), MIXED -> ARRAY
+    // :: STRING|ctgdbQuery, ARRAY -> ARRAY
     // Paginate any result set with metadata
-    public function paginate(
-        string|CTGDBQuery $source,
-        array                   $config = [],
-        ?callable               $fn = null,
-        mixed                   $accumulator = []
-    ): array {
+    public function paginate(string|CTGDBQuery $source, array $config = []): array {
         $page = max(1, $config['page'] ?? 1);
         $perPage = max(1, $config['per_page'] ?? 20);
         $offset = ($page - 1) * $perPage;
@@ -303,7 +151,8 @@ class CTGDB {
 
         if ($source instanceof CTGDBQuery) {
             if ($total === null) {
-                $countResult = $this->run($source->toCountStatement());
+                $countStatement = $source->toCountStatement();
+                $countResult = $this->run($countStatement['sql'], $countStatement['values']);
                 $total = (int)$countResult[0]['total'];
             }
 
@@ -313,7 +162,7 @@ class CTGDB {
             }
             $query->page($page, $perPage);
 
-            $data = $this->run($query->toStatement(), $fn, $accumulator);
+            $data = $this->run($query);
 
             return [
                 'data' => $data,
@@ -336,7 +185,7 @@ class CTGDB {
             }
             $sql .= " LIMIT {$perPage} OFFSET {$offset}";
 
-            $data = $this->run(['sql' => $sql, 'values' => []], $fn, $accumulator);
+            $data = $this->run($sql);
 
         } else {
             throw new CTGDBError('INVALID_ARGUMENT',
@@ -368,32 +217,6 @@ class CTGDB {
      * Protected Methods
      *
      */
-
-    // :: MIXED -> ARRAY
-    // Resolve a value to [value, PDO type constant]
-    protected function resolveType(mixed $value): array {
-        if (is_array($value) && isset($value['type'], $value['value'])) {
-            return [$value['value'], match($value['type']) {
-                'int'   => \PDO::PARAM_INT,
-                'str'   => \PDO::PARAM_STR,
-                'bool'  => \PDO::PARAM_BOOL,
-                'null'  => \PDO::PARAM_NULL,
-                'float' => \PDO::PARAM_STR,
-                default => throw new CTGDBError('INVALID_ARGUMENT',
-                    "Unknown type: {$value['type']}",
-                    ['type' => $value['type'], 'allowed' => ['int','str','bool','null','float']]
-                )
-            }];
-        }
-
-        return match(true) {
-            is_int($value)   => [$value, \PDO::PARAM_INT],
-            is_bool($value)  => [$value, \PDO::PARAM_BOOL],
-            is_null($value)  => [$value, \PDO::PARAM_NULL],
-            is_float($value) => [(string)$value, \PDO::PARAM_STR],
-            default          => [$value, \PDO::PARAM_STR],
-        };
-    }
 
     // :: ARRAY -> [STRING, ARRAY]
     // Build WHERE clause from associative array of conditions
@@ -517,61 +340,15 @@ class CTGDB {
         return strtoupper($clean);
     }
 
-    // :: VOID -> \PDO
-    // Access the underlying PDO instance
-    protected function getPdo(): \PDO {
-        return $this->_pdo;
-    }
-
-    /**
-     *
-     * Static Methods
-     *
-     */
-
-    // Static Factory Method :: STRING, STRING, STRING, STRING, ARRAY -> ctgdb
-    // Creates and returns a new CTGDB instance
-    public static function connect(
-        string $host,
-        string $database,
-        string $username,
-        string $password,
-        array  $options = []
-    ): static {
-        return new static($host, $database, $username, $password, $options);
-    }
-
     /**
      *
      * Private Methods
      *
      */
 
-    // :: \PDOStatement, ARRAY -> VOID
-    // Bind values to a prepared statement
-    private function _bindValues(\PDOStatement $stmt, array $values): void {
-        $isAssoc = !array_is_list($values);
-        $index = 1;
-        foreach ($values as $key => $val) {
-            [$resolved, $pdoType] = $this->resolveType($val);
-            if ($isAssoc && is_string($key)) {
-                $param = str_starts_with($key, ':') ? $key : ":{$key}";
-                $stmt->bindValue($param, $resolved, $pdoType);
-            } else {
-                $stmt->bindValue($index, $resolved, $pdoType);
-                $index++;
-            }
-        }
-    }
-
-    // :: ARRAY, ARRAY, ?(ARRAY, MIXED -> MIXED), MIXED -> MIXED
+    // :: ARRAY, ARRAY -> ARRAY
     // Handle multi-table join reads
-    private function _readJoin(
-        array     $tables,
-        array     $config,
-        ?callable $fn,
-        mixed     $accumulator
-    ): mixed {
+    private function _readJoin(array $tables, array $config): array {
         $baseTable = array_shift($tables);
         $validatedBase = $this->validateIdentifier($baseTable);
         $joinType = $config['join'] ?? 'inner';
@@ -650,7 +427,24 @@ class CTGDB {
             $sql .= " LIMIT " . (int)$config['limit'];
         }
 
-        return $this->run(['sql' => $sql, 'values' => $values], $fn, $accumulator);
+        return $this->run($sql, $values);
+    }
+
+    // :: STRING|ctgdbQuery, ARRAY -> [STRING, ARRAY]
+    // Resolves raw SQL or a structured query into SQL and bound values
+    private function _resolveQuery(string|CTGDBQuery $query, array $values): array {
+        if (is_string($query)) {
+            return [$query, $values];
+        }
+        if ($values !== []) {
+            throw new CTGDBError(
+                'INVALID_ARGUMENT',
+                'Values must be defined by CTGDBQuery when a structured query is supplied',
+                ['value_count' => count($values)]
+            );
+        }
+        $statement = $query->toStatement();
+        return [$statement['sql'], $statement['values']];
     }
 
     // :: ARRAY, STRING -> STRING
@@ -680,5 +474,17 @@ class CTGDB {
             }
             return $this->validateIdentifier($col);
         }, $columns));
+    }
+
+    /**
+     *
+     * Static Methods
+     *
+     */
+
+    // Static Factory Method :: ["host" => STRING, "database" => STRING, "username" => STRING, "password" => STRING, "charset"? => STRING, "timeout"? => ?INT, "persistent"? => BOOL] -> ctgdb
+    // Creates the main database API over a new validated connection
+    public static function init(array $config): static {
+        return new static(CTGDBConn::init($config));
     }
 }

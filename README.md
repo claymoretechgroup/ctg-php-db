@@ -1,18 +1,23 @@
 # ctg-php-db
 
-`ctg-php-db` is a minimal PHP database library built on PDO. One class,
-one connection, one low-level method (`run`) with CRUD convenience methods
-built on top. `CTGDBQuery` is the default read path — a structured query
-builder where every column, operator, and value is validated and
-parameterized by construction. All values are bound through PDO prepared
-statements. All identifiers are validated before interpolation.
+`ctg-php-db` is a minimal PHP database library built on PDO. `CTGDB` provides
+safe CRUD methods, materialized execution through `run()`, and incremental row
+handling through `process()`, while `CTGDBConn` owns connection lifecycle and
+transaction state. `CTGDBQuery` is
+the default read path — a structured query builder where every column,
+operator, and value is validated and parameterized by construction. All
+values are bound through PDO prepared statements. All identifiers are
+validated before interpolation.
 
 **Key Features:**
 
-* **`run` is the primitive** — every database operation flows through
-  a single method that handles preparation, binding, and execution
-* **Fold over results** — callers control output shape via an optional
-  transform function and accumulator
+* **Explicit execution modes** — `run()` returns a complete result while
+  `process()` handles result rows incrementally
+* **Explicit connection lifecycle** — `CTGDBConn` owns PDO creation,
+  statement execution, transaction boundaries, persistence state, and
+  fail-closed invalidation without exposing PDO
+* **Process results** — callers control incremental output through a row
+  processor and initial state
 * **Composable** — `CTGDBQuery` combines column selection, WHERE conditions,
   joins, ordering, and pagination into a single structured object that
   `read()` and `paginate()` accept directly
@@ -23,8 +28,8 @@ statements. All identifiers are validated before interpolation.
   no inference surprises
 * **SQL injection hardened** — values via PDO binding, identifiers via
   regex validation, keywords via hardcoded allowlists
-* **Subclass-friendly** — protected internals for application-specific
-  optimization
+* **Composable connection layer** — `CTGDB` operates over an injectable
+  `CTGDBConn` instance instead of being a connection subtype
 
 ## Install
 
@@ -46,30 +51,54 @@ composer require ctg/php-db
 
 ## Connection lifecycle
 
-Version 1.1 adds an explicit fail-closed lifecycle for security-sensitive
-transaction coordinators:
+Version 1.1 introduced an explicit fail-closed lifecycle for security-sensitive
+transaction coordinators. Version 2.0 moves that lifecycle into `CTGDBConn`;
+`CTGDB` uses the connection for query execution without forwarding its
+lifecycle API:
 
 ```php
-if ($db->isPersistent()) {
+$connection = CTGDBConn::init($config);
+$db = new CTGDB($connection);
+
+if ($connection->isPersistent()) {
     throw new RuntimeException('This operation requires a nonpersistent connection');
 }
 
-$db->invalidate();
+$connection->invalidate();
 ```
 
-`invalidate()` closes the PDO handle and permanently poisons the CTGDB object;
-all later queries fail with `CONNECTION_FAILED`. Call it when rollback cannot be
-confirmed or commit acknowledgement is indeterminate. Reject persistent
-connections before starting transactions that require this guarantee.
+`invalidate()` releases the wrapper's PDO handle and permanently poisons the
+composed connection; all later queries fail with `CONNECTION_FAILED`. Call it when
+rollback cannot be confirmed or commit acknowledgement is indeterminate.
+Reject persistent connections before starting transactions that require
+physical connection disposal.
 
 ## Examples
 
 ### Connecting
 
+Version 2.0 replaces the positional constructor and `connect()` factory with
+an injectable `CTGDBConn` constructor and a config-based `init()` factory.
+
 ```php
 use CTG\DB\CTGDB;
 
-$db = CTGDB::connect('localhost', 'myapp', 'user', 'pass');
+$db = CTGDB::init([
+    'host' => 'localhost',
+    'database' => 'myapp',
+    'username' => 'user',
+    'password' => 'pass',
+]);
+```
+
+Use an explicitly injected connection when transaction or lifecycle control is
+required:
+
+```php
+use CTG\DB\CTGDBConn;
+
+$connection = CTGDBConn::init($config);
+$db = new CTGDB($connection);
 ```
 
 ### Basic CRUD
@@ -102,20 +131,26 @@ $db->delete('pickups', [
 ]);
 ```
 
-### Raw Queries with Fold
+### Raw Queries and Incremental Processing
 
-Transform results as they stream from the database:
+`run()` materializes a complete result. `process()` handles rows one at a time:
 
 ```php
-$emails = $db->run(
-    'SELECT email FROM users WHERE active = ?',
-    fn($record, $acc) => [...$acc, $record['email']],
-    []
+$activeUsers = $db->run(
+    'SELECT * FROM users WHERE active = ?',
+    [true]
 );
 
-$byId = $db->run(
-    'SELECT * FROM guitars',
-    fn($record, $acc) => $acc + [$record['id'] => $record],
+$emails = $db->process(
+    'SELECT email FROM users WHERE active = ?',
+    fn($record, $result) => [...$result, $record['email']],
+    [],
+    values: [true]
+);
+
+$byId = $db->process(
+    CTGDBQuery::from('guitars')->orderBy('id'),
+    fn($record, $result) => $result + [$record['id'] => $record],
     []
 );
 ```
@@ -195,7 +230,6 @@ Build multi-step workflows that thread data and the DB instance:
 
 ```php
 use CTG\DB\CTGDBQuery;
-use CTG\FnProg\CTGFnprog;
 
 $pipeline = $db->compose([
     fn($_, $db) => $db->read(
@@ -203,11 +237,11 @@ $pipeline = $db->compose([
             ->where('year_purchased', '>=', 2020, 'int')
             ->orderBy('year_purchased', 'DESC')
     ),
-    fn($guitars, $_) => CTGFnprog::pipe([
-        CTGFnprog::filter(fn($g) => $g['year_purchased'] >= 2020),
-        CTGFnprog::sortBy('year_purchased', 'DESC'),
-        CTGFnprog::pick(['make', 'model', 'color']),
-    ])($guitars),
+    fn($guitars, $_) => array_map(fn($guitar) => [
+        'make' => $guitar['make'],
+        'model' => $guitar['model'],
+        'color' => $guitar['color'],
+    ], $guitars),
 ]);
 
 $recentGuitars = $pipeline();
@@ -225,11 +259,16 @@ $getGuitars = $db->compose([
 ]);
 
 $formatForApi = $db->compose([
-    fn($guitars, $_) => CTGFnprog::pipe([
-        CTGFnprog::omit(['id']),
-        CTGFnprog::rename(['year_purchased' => 'year']),
-        CTGFnprog::sortBy('make'),
-    ])($guitars),
+    function($guitars, $_) {
+        $formatted = array_map(fn($guitar) => [
+            'make' => $guitar['make'],
+            'model' => $guitar['model'],
+            'color' => $guitar['color'],
+            'year' => $guitar['year_purchased'],
+        ], $guitars);
+        usort($formatted, fn($left, $right) => $left['make'] <=> $right['make']);
+        return $formatted;
+    },
 ]);
 
 $fullPipeline = $db->compose([$getGuitars, $formatForApi]);
