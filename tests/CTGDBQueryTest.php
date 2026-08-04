@@ -18,6 +18,56 @@ $pipelines = [];
 // STATIC FACTORY
 // ═══════════════════════════════════════════════════════════════
 
+$pipelines[] = CTGTest::init('quoteIdentifier — canonical identifier quoting')
+    ->stage('quote', fn(CTGTestState $state) => [
+        'bare' => CTGDBQuery::quoteIdentifier('make'),
+        'qualified' => CTGDBQuery::quoteIdentifier('guitars.make'),
+    ])
+    ->assert('quotes bare identifier', fn(CTGTestState $state) => $state->getSubject()['bare'], CTGTestPredicates::equals('`make`'))
+    ->assert('quotes qualified identifier', fn(CTGTestState $state) => $state->getSubject()['qualified'], CTGTestPredicates::equals('`guitars`.`make`'))
+    ;
+
+$pipelines[] = CTGTest::init('quoteIdentifier — rejects unsafe identifier')
+    ->stage('attempt', function(CTGTestState $state) {
+        try {
+            CTGDBQuery::quoteIdentifier('guitars; DROP TABLE guitars;--');
+            return 'no exception';
+        } catch (CTGDBError $error) {
+            return $error->type;
+        }
+    })
+    ->assert('throws INVALID_IDENTIFIER', fn(CTGTestState $state) => $state->getSubject(), CTGTestPredicates::equals('INVALID_IDENTIFIER'))
+    ;
+
+$pipelines[] = CTGTest::init('buildWhere — builds parameterized equality fragment')
+    ->stage('build', fn(CTGTestState $state) => CTGDBQuery::buildWhere([
+        'tenant_id' => ['type' => 'int', 'value' => 7],
+        'active' => true,
+    ]))
+    ->assert('quotes identifiers and uses placeholders', fn(CTGTestState $state) => $state->getSubject()[0], CTGTestPredicates::equals(' WHERE `tenant_id` = ? AND `active` = ?'))
+    ->assert('preserves values for PDO binding', fn(CTGTestState $state) => $state->getSubject()[1], CTGTestPredicates::equals([
+        ['type' => 'int', 'value' => 7],
+        true,
+    ]))
+    ;
+
+$pipelines[] = CTGTest::init('buildWhere — empty conditions produce an empty fragment')
+    ->stage('build', fn(CTGTestState $state) => CTGDBQuery::buildWhere([]))
+    ->assert('returns empty SQL and values', fn(CTGTestState $state) => $state->getSubject(), CTGTestPredicates::equals(['', []]))
+    ;
+
+$pipelines[] = CTGTest::init('buildWhere — rejects unsafe identifiers')
+    ->stage('attempt', function(CTGTestState $state) {
+        try {
+            CTGDBQuery::buildWhere(['id OR 1=1' => 1]);
+            return 'no exception';
+        } catch (CTGDBError $error) {
+            return $error->type;
+        }
+    })
+    ->assert('throws INVALID_IDENTIFIER', fn(CTGTestState $state) => $state->getSubject(), CTGTestPredicates::equals('INVALID_IDENTIFIER'))
+    ;
+
 $pipelines[] = CTGTest::init('from — returns CTGDBQuery instance')
     ->stage('create', fn(CTGTestState $state) => CTGDBQuery::from('guitars'))
     ->assert('is CTGDBQuery', fn(CTGTestState $state) => $state->getSubject() instanceof CTGDBQuery, CTGTestPredicates::isTrue())
@@ -331,31 +381,31 @@ $pipelines[] = CTGTest::init('where — BETWEEN with empty array throws INVALID_
 // JOINs
 // ═══════════════════════════════════════════════════════════════
 
-$pipelines[] = CTGTest::init('join — inner join')
+$pipelines[] = CTGTest::init('innerJoin — delegates to canonical join builder')
     ->stage('build', fn(CTGTestState $state) => CTGDBQuery::from('guitars')
-        ->join('pickups', 'inner', ['guitars.id' => 'pickups.guitar_id'])
+        ->innerJoin('pickups', ['guitars.id' => 'pickups.guitar_id'])
         ->toStatement())
     ->assert('sql', fn(CTGTestState $state) => $state->getSubject()['sql'], CTGTestPredicates::equals('SELECT * FROM `guitars` INNER JOIN `pickups` ON `guitars`.`id` = `pickups`.`guitar_id`'))
     ->assert('values empty', fn(CTGTestState $state) => $state->getSubject()['values'], CTGTestPredicates::equals([]))
     ;
 
-$pipelines[] = CTGTest::init('join — left join')
+$pipelines[] = CTGTest::init('leftJoin — delegates to canonical join builder')
     ->stage('build', fn(CTGTestState $state) => CTGDBQuery::from('guitars')
-        ->join('pickups', 'left', ['guitars.id' => 'pickups.guitar_id'])
+        ->leftJoin('pickups', ['guitars.id' => 'pickups.guitar_id'])
         ->toStatement())
     ->assert('sql', fn(CTGTestState $state) => $state->getSubject()['sql'], CTGTestPredicates::equals('SELECT * FROM `guitars` LEFT JOIN `pickups` ON `guitars`.`id` = `pickups`.`guitar_id`'))
     ;
 
-$pipelines[] = CTGTest::init('join — right join')
+$pipelines[] = CTGTest::init('rightJoin — delegates to canonical join builder')
     ->stage('build', fn(CTGTestState $state) => CTGDBQuery::from('guitars')
-        ->join('pickups', 'right', ['guitars.id' => 'pickups.guitar_id'])
+        ->rightJoin('pickups', ['guitars.id' => 'pickups.guitar_id'])
         ->toStatement())
     ->assert('sql', fn(CTGTestState $state) => $state->getSubject()['sql'], CTGTestPredicates::equals('SELECT * FROM `guitars` RIGHT JOIN `pickups` ON `guitars`.`id` = `pickups`.`guitar_id`'))
     ;
 
-$pipelines[] = CTGTest::init('join — cross join')
+$pipelines[] = CTGTest::init('crossJoin — delegates without an ON condition')
     ->stage('build', fn(CTGTestState $state) => CTGDBQuery::from('guitars')
-        ->join('pickups', 'cross', [])
+        ->crossJoin('pickups')
         ->toStatement())
     ->assert('sql', fn(CTGTestState $state) => $state->getSubject()['sql'], CTGTestPredicates::equals('SELECT * FROM `guitars` CROSS JOIN `pickups`'))
     ;

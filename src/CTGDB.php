@@ -21,15 +21,15 @@ class CTGDB {
      *
      */
 
-    // :: STRING|ctgdbQuery, ARRAY -> ARRAY|INT|STRING
-    // Executes a query and returns its complete materialized result
-    public function run(string|CTGDBQuery $query, array $values = []): array|int|string {
+    // :: STRING|ctgdbQuery, ARRAY -> ARRAY
+    // Executes a row-producing query and returns all rows as a materialized array
+    public function run(string|CTGDBQuery $query, array $values = []): array {
         [$sql, $resolvedValues] = $this->_resolveQuery($query, $values);
-        return $this->_connection->execute($sql, $resolvedValues);
+        return $this->_connection->query($sql, $resolvedValues);
     }
 
     // :: STRING|ctgdbQuery, (ARRAY, MIXED -> MIXED), MIXED, ARRAY -> MIXED
-    // Processes query results one row at a time and returns the final state
+    // Processes row-producing query results one row at a time and returns the final state
     public function process(string|CTGDBQuery $query, callable $processor, mixed $initial = null, array $values = []): mixed {
         [$sql, $resolvedValues] = $this->_resolveQuery($query, $values);
         return $this->_connection->process($sql, $processor, $initial, $resolvedValues);
@@ -38,13 +38,13 @@ class CTGDB {
     // :: STRING, ARRAY -> INT|STRING
     // Insert a single row, returns last insert ID
     public function create(string $table, array $data): int|string {
-        $table = $this->validateIdentifier($table);
+        $table = CTGDBQuery::quoteIdentifier($table);
         $columns = [];
         $placeholders = [];
         $values = [];
 
         foreach ($data as $col => $val) {
-            $columns[] = $this->validateIdentifier($col);
+            $columns[] = CTGDBQuery::quoteIdentifier($col);
             $placeholders[] = '?';
             $values[] = $val;
         }
@@ -52,46 +52,17 @@ class CTGDB {
         $colStr = implode(', ', $columns);
         $phStr = implode(', ', $placeholders);
 
-        return $this->run("INSERT INTO {$table} ({$colStr}) VALUES ({$phStr})", $values);
+        // Only validated identifiers and placeholders enter SQL; values remain bound parameters
+        return $this->_connection->insert("INSERT INTO {$table} ({$colStr}) VALUES ({$phStr})", $values);
     }
 
     // :: STRING|ARRAY|ctgdbQuery, ARRAY -> ARRAY
-    // Reads rows from one or more tables
+    // Builds or accepts a structured SELECT query and returns its materialized rows
     public function read(string|array|CTGDBQuery $tables, array $config = []): array {
         if ($tables instanceof CTGDBQuery) {
             return $this->run($tables);
         }
-
-        if (is_array($tables)) {
-            return $this->_readJoin($tables, $config);
-        }
-
-        $table = $this->validateIdentifier($tables);
-        $columns = $this->_buildColumnList($config['columns'] ?? ['*'], $tables);
-        $values = [];
-        $whereSql = '';
-
-        if (isset($config['where'])) {
-            if (is_string($config['where'])) {
-                throw new CTGDBError('INVALID_ARGUMENT',
-                    'String where is no longer supported in read(). Use CTGDBQuery instead.',
-                    ['where' => $config['where']]
-                );
-            }
-            [$whereSql, $values] = $this->buildWhere($config['where']);
-        }
-
-        $sql = "SELECT {$columns} FROM {$table}{$whereSql}";
-
-        if (isset($config['order'])) {
-            $sql .= " ORDER BY " . $this->validateOrderClause($config['order']);
-        }
-
-        if (isset($config['limit'])) {
-            $sql .= " LIMIT " . (int)$config['limit'];
-        }
-
-        return $this->run($sql, $values);
+        return $this->run($this->_createReadQuery($tables, $config));
     }
 
     // :: STRING, ARRAY, ARRAY -> INT
@@ -106,20 +77,20 @@ class CTGDB {
             );
         }
 
-        $table = $this->validateIdentifier($table);
+        $table = CTGDBQuery::quoteIdentifier($table);
         $setParts = [];
         $values = [];
 
         foreach ($data as $col => $val) {
-            $setParts[] = $this->validateIdentifier($col) . ' = ?';
+            $setParts[] = CTGDBQuery::quoteIdentifier($col) . ' = ?';
             $values[] = $val;
         }
 
-        [$whereSql, $whereValues] = $this->buildWhere($where);
+        [$whereSql, $whereValues] = CTGDBQuery::buildWhere($where);
         $values = array_merge($values, $whereValues);
 
         $setStr = implode(', ', $setParts);
-        return $this->run("UPDATE {$table} SET {$setStr}{$whereSql}", $values);
+        return $this->_connection->execute("UPDATE {$table} SET {$setStr}{$whereSql}", $values);
     }
 
     // :: STRING, ARRAY -> INT
@@ -132,10 +103,10 @@ class CTGDB {
             );
         }
 
-        $table = $this->validateIdentifier($table);
-        [$whereSql, $values] = $this->buildWhere($where);
+        $table = CTGDBQuery::quoteIdentifier($table);
+        [$whereSql, $values] = CTGDBQuery::buildWhere($where);
 
-        return $this->run("DELETE FROM {$table}{$whereSql}", $values);
+        return $this->_connection->execute("DELETE FROM {$table}{$whereSql}", $values);
     }
 
     // :: STRING|ctgdbQuery, ARRAY -> ARRAY
@@ -143,73 +114,26 @@ class CTGDB {
     public function paginate(string|CTGDBQuery $source, array $config = []): array {
         $page = max(1, $config['page'] ?? 1);
         $perPage = max(1, $config['per_page'] ?? 20);
-        $offset = ($page - 1) * $perPage;
-        $sort = isset($config['sort']) ? $this->validateIdentifier($config['sort']) : null;
-        $order = isset($config['order']) ? $this->validateSortDirection($config['order']) : 'ASC';
-
         $total = $config['total'] ?? null;
-
-        if ($source instanceof CTGDBQuery) {
-            if ($total === null) {
-                $countStatement = $source->toCountStatement();
-                $countResult = $this->run($countStatement['sql'], $countStatement['values']);
-                $total = (int)$countResult[0]['total'];
-            }
-
-            $query = clone $source;
-            if ($sort !== null) {
-                $query->resetOrderBy()->orderBy($sort, $order);
-            }
-            $query->page($page, $perPage);
-
-            $data = $this->run($query);
-
-            return [
-                'data' => $data,
-                'pagination' => $this->buildPaginationMeta($page, $perPage, $total),
-            ];
+        $query = $source instanceof CTGDBQuery ? clone $source : CTGDBQuery::from($source);
+        if (is_string($source) && isset($config['columns'])) {
+            $query->columns(...$config['columns']);
         }
-
-        if (is_string($source)) {
-            $table = $this->validateIdentifier($source);
-            $columns = $this->_buildColumnList($config['columns'] ?? ['*'], $source);
-
-            if ($total === null) {
-                $countResult = $this->run("SELECT COUNT(*) as total FROM {$table}");
-                $total = (int)$countResult[0]['total'];
-            }
-
-            $sql = "SELECT {$columns} FROM {$table}";
-            if ($sort !== null) {
-                $sql .= " ORDER BY {$sort} {$order}";
-            }
-            $sql .= " LIMIT {$perPage} OFFSET {$offset}";
-
-            $data = $this->run($sql);
-
-        } else {
-            throw new CTGDBError('INVALID_ARGUMENT',
-                'paginate() source must be a CTGDBQuery instance or a table name string',
-                ['source' => $source]
-            );
+        if (isset($config['sort'])) {
+            $query->resetOrderBy()->orderBy($config['sort'], $config['order'] ?? 'ASC');
         }
+        if ($total === null) {
+            $countStatement = $query->toCountStatement();
+            $countResult = $this->run($countStatement['sql'], $countStatement['values']);
+            $total = (int)$countResult[0]['total'];
+        }
+        $query->page($page, $perPage);
+        $data = $this->run($query);
 
         return [
             'data' => $data,
-            'pagination' => $this->buildPaginationMeta($page, $perPage, $total),
+            'pagination' => $this->calcPaginationInfo($page, $perPage, $total),
         ];
-    }
-
-    // :: [(MIXED, ctgdb -> MIXED)] -> (MIXED -> MIXED)
-    // Build a pipeline of functions that thread an accumulator and $this
-    public function compose(array $fns): callable {
-        return function(mixed $accumulator = null) use ($fns): mixed {
-            $result = $accumulator;
-            foreach ($fns as $fn) {
-                $result = $fn($result, $this);
-            }
-            return $result;
-        };
     }
 
     /**
@@ -218,23 +142,9 @@ class CTGDB {
      *
      */
 
-    // :: ARRAY -> [STRING, ARRAY]
-    // Build WHERE clause from associative array of conditions
-    protected function buildWhere(array $where): array {
-        $parts = [];
-        $values = [];
-        foreach ($where as $col => $val) {
-            $quotedCol = $this->validateIdentifier($col);
-            $parts[] = "{$quotedCol} = ?";
-            $values[] = $val;
-        }
-        $sql = !empty($parts) ? ' WHERE ' . implode(' AND ', $parts) : '';
-        return [$sql, $values];
-    }
-
     // :: INT, INT, INT -> ARRAY
-    // Calculate pagination metadata
-    protected function buildPaginationMeta(int $page, int $perPage, int $total): array {
+    // Calculate pagination information from page size and total row count
+    protected function calcPaginationInfo(int $page, int $perPage, int $total): array {
         $totalPages = $perPage > 0 ? (int)ceil($total / $perPage) : 0;
         return [
             'page' => $page,
@@ -246,188 +156,124 @@ class CTGDB {
         ];
     }
 
-    // :: STRING -> STRING
-    // Validate and backtick-quote an identifier
-    protected function validateIdentifier(string $identifier): string {
-        $clean = trim($identifier, '`');
-        if (!preg_match('/^[a-zA-Z_][a-zA-Z0-9_.]*$/', $clean)) {
-            throw new CTGDBError('INVALID_IDENTIFIER',
-                "Invalid identifier: {$identifier}",
-                ['identifier' => $identifier]
-            );
-        }
-        if (str_contains($clean, '.')) {
-            $parts = explode('.', $clean);
-            return implode('.', array_map(fn($p) => $p === '*' ? '*' : "`{$p}`", $parts));
-        }
-        return "`{$clean}`";
-    }
-
-    // :: STRING -> STRING
-    // Validate join type against allowlist
-    protected function validateJoinType(string $type): string {
-        $allowed = ['inner', 'left', 'right', 'cross'];
-        $clean = strtolower(trim($type));
-        if (!in_array($clean, $allowed, true)) {
-            throw new CTGDBError('INVALID_JOIN_TYPE',
-                "Invalid join type: {$type}. Allowed: " . implode(', ', $allowed),
-                ['type' => $type, 'allowed' => $allowed]
-            );
-        }
-        return strtoupper($clean);
-    }
-
-    // :: STRING -> STRING
-    // Validate sort direction against allowlist
-    protected function validateSortDirection(string $dir): string {
-        $allowed = ['asc', 'desc'];
-        $clean = strtolower(trim($dir));
-        if (!in_array($clean, $allowed, true)) {
-            throw new CTGDBError('INVALID_SORT',
-                "Invalid sort direction: {$dir}. Allowed: ASC, DESC",
-                ['direction' => $dir, 'allowed' => ['ASC', 'DESC']]
-            );
-        }
-        return strtoupper($clean);
-    }
-
-    // :: STRING -> STRING
-    // Validate and sanitize an ORDER BY clause (e.g., 'col ASC, col2 DESC')
-    protected function validateOrderClause(string $order): string {
-        $parts = array_map('trim', explode(',', $order));
-        $validated = [];
-        foreach ($parts as $part) {
-            $tokens = preg_split('/\s+/', $part);
-            $col = $this->validateIdentifier($tokens[0]);
-            if (isset($tokens[1])) {
-                $dir = $this->validateSortDirection($tokens[1]);
-                $validated[] = "{$col} {$dir}";
-            } else {
-                $validated[] = $col;
-            }
-        }
-        return implode(', ', $validated);
-    }
-
-    // :: STRING -> STRING
-    // Validate and sanitize a GROUP BY clause (e.g., 'col1, col2')
-    protected function validateGroupClause(string $group): string {
-        $parts = array_map('trim', explode(',', $group));
-        $validated = [];
-        foreach ($parts as $part) {
-            $validated[] = $this->validateIdentifier($part);
-        }
-        return implode(', ', $validated);
-    }
-
-    // :: STRING -> STRING
-    // Validate filter operator against allowlist
-    protected function validateOperator(string $op): string {
-        $allowed = [
-            '=', '>', '<', '>=', '<=', '!=',
-            'like', 'not like',
-            'in', 'not in',
-            'is', 'is not',
-            'between'
-        ];
-        $clean = strtolower(trim($op));
-        if (!in_array($clean, $allowed, true)) {
-            throw new CTGDBError('INVALID_OPERATOR',
-                "Invalid operator: {$op}",
-                ['operator' => $op, 'allowed' => $allowed]
-            );
-        }
-        return strtoupper($clean);
-    }
-
     /**
      *
      * Private Methods
      *
      */
 
-    // :: ARRAY, ARRAY -> ARRAY
-    // Handle multi-table join reads
-    private function _readJoin(array $tables, array $config): array {
-        $baseTable = array_shift($tables);
-        $validatedBase = $this->validateIdentifier($baseTable);
+    // :: STRING|ARRAY, ARRAY -> ctgdbQuery
+    // Translates the legacy read interface into the canonical SELECT builder
+    private function _createReadQuery(string|array $tables, array $config): CTGDBQuery {
+        if (is_string($tables)) {
+            $query = CTGDBQuery::from($tables);
+        } else {
+            if ($tables === []) {
+                throw new CTGDBError('INVALID_ARGUMENT', 'read() requires at least one table');
+            }
+            $baseTable = array_shift($tables);
+            $query = CTGDBQuery::from($baseTable);
+            $this->_configureReadJoins($query, $tables, $config);
+        }
+        $this->_configureReadQuery($query, $config);
+        return $query;
+    }
+
+    // :: ctgdbQuery, ARRAY, ARRAY -> VOID
+    // Translates legacy uniform or per-table join configuration into builder calls
+    private function _configureReadJoins(CTGDBQuery $query, array $tables, array $config): void {
         $joinType = $config['join'] ?? 'inner';
-        $columns = $this->_buildColumnList($config['columns'] ?? ['*'], $baseTable);
-        $values = [];
-
-        $joinClauses = [];
-
         if (is_array($joinType) && isset($joinType[0]['type'])) {
             if (count($joinType) !== count($tables)) {
-                throw new CTGDBError('INVALID_ARGUMENT',
+                throw new CTGDBError(
+                    'INVALID_ARGUMENT',
                     'Join definitions count must match joined tables count',
                     ['join_count' => count($joinType), 'table_count' => count($tables)]
                 );
             }
-            foreach ($joinType as $i => $joinDef) {
-                $jType = $this->validateJoinType($joinDef['type']);
-                $jTable = $this->validateIdentifier($tables[$i]);
-                $onParts = [];
-                foreach ($joinDef['on'] as $left => $right) {
-                    $onParts[] = $this->validateIdentifier($left) . " = " . $this->validateIdentifier($right);
-                }
-                $joinClauses[] = "{$jType} JOIN {$jTable} ON " . implode(' AND ', $onParts);
+            foreach ($joinType as $index => $joinDefinition) {
+                $query->join($tables[$index], $joinDefinition['type'], $joinDefinition['on'] ?? []);
             }
-        } else {
-            $jType = $this->validateJoinType(is_string($joinType) ? $joinType : 'inner');
-            $onArr = $config['on'] ?? [];
-            foreach ($tables as $i => $tbl) {
-                $jTable = $this->validateIdentifier($tbl);
-                if (!isset($onArr[$i])) {
-                    throw new CTGDBError('INVALID_ARGUMENT',
-                        "Missing 'on' condition for join table: {$tbl}",
-                        ['table' => $tbl, 'index' => $i]
-                    );
-                }
-                $onParts = [];
-                foreach ($onArr[$i] as $left => $right) {
-                    $onParts[] = $this->validateIdentifier($left) . " = " . $this->validateIdentifier($right);
-                }
-                $joinClauses[] = "{$jType} JOIN {$jTable} ON " . implode(' AND ', $onParts);
-            }
+            return;
         }
 
-        $sql = "SELECT {$columns} FROM {$validatedBase} " . implode(' ', $joinClauses);
+        $resolvedType = is_string($joinType) ? $joinType : 'inner';
+        $on = $config['on'] ?? [];
+        foreach ($tables as $index => $table) {
+            if (!isset($on[$index])) {
+                throw new CTGDBError(
+                    'INVALID_ARGUMENT',
+                    "Missing 'on' condition for join table: {$table}",
+                    ['table' => $table, 'index' => $index]
+                );
+            }
+            $query->join($table, $resolvedType, $on[$index]);
+        }
+    }
 
-        if (isset($config['where_raw'])) {
-            throw new CTGDBError('INVALID_ARGUMENT',
+    // :: ctgdbQuery, ARRAY -> VOID
+    // Translates supported legacy SELECT configuration into builder calls
+    private function _configureReadQuery(CTGDBQuery $query, array $config): void {
+        if (isset($config['columns'])) {
+            $query->columns(...$config['columns']);
+        }
+        if (array_key_exists('where_raw', $config)) {
+            throw new CTGDBError(
+                'INVALID_ARGUMENT',
                 'where_raw is no longer supported. Use CTGDBQuery instead.',
                 ['where_raw' => $config['where_raw']]
             );
         }
         if (isset($config['where'])) {
             if (is_string($config['where'])) {
-                throw new CTGDBError('INVALID_ARGUMENT',
+                throw new CTGDBError(
+                    'INVALID_ARGUMENT',
                     'String where is no longer supported in read(). Use CTGDBQuery instead.',
                     ['where' => $config['where']]
                 );
             }
-            [$whereSql, $values] = $this->buildWhere($config['where']);
-            $sql .= $whereSql;
+            $this->_configureReadWhere($query, $config['where']);
         }
-
         if (isset($config['group'])) {
-            $sql .= " GROUP BY " . $this->validateGroupClause($config['group']);
+            $groups = array_map('trim', explode(',', $config['group']));
+            $query->groupBy(...$groups);
         }
-        if (isset($config['having'])) {
-            throw new CTGDBError('INVALID_ARGUMENT',
+        if (array_key_exists('having', $config)) {
+            throw new CTGDBError(
+                'INVALID_ARGUMENT',
                 'Raw having is no longer supported. Use CTGDBQuery instead.',
                 ['having' => $config['having']]
             );
         }
         if (isset($config['order'])) {
-            $sql .= " ORDER BY " . $this->validateOrderClause($config['order']);
+            $this->_configureReadOrder($query, $config['order']);
         }
         if (isset($config['limit'])) {
-            $sql .= " LIMIT " . (int)$config['limit'];
+            $query->limit((int)$config['limit']);
         }
+    }
 
-        return $this->run($sql, $values);
+    // :: ctgdbQuery, ARRAY -> VOID
+    // Converts equality-only legacy WHERE entries into structured conditions
+    private function _configureReadWhere(CTGDBQuery $query, array $where): void {
+        foreach ($where as $column => $condition) {
+            $value = $condition;
+            $type = null;
+            if (is_array($condition) && array_key_exists('type', $condition) && array_key_exists('value', $condition)) {
+                $value = $condition['value'];
+                $type = $condition['type'];
+            }
+            $query->where($column, '=', $value, $type);
+        }
+    }
+
+    // :: ctgdbQuery, STRING -> VOID
+    // Converts a comma-separated legacy order clause into structured ordering
+    private function _configureReadOrder(CTGDBQuery $query, string $order): void {
+        foreach (array_map('trim', explode(',', $order)) as $part) {
+            $tokens = preg_split('/\s+/', $part) ?: [];
+            $query->orderBy($tokens[0] ?? '', $tokens[1] ?? 'ASC');
+        }
     }
 
     // :: STRING|ctgdbQuery, ARRAY -> [STRING, ARRAY]
@@ -445,35 +291,6 @@ class CTGDB {
         }
         $statement = $query->toStatement();
         return [$statement['sql'], $statement['values']];
-    }
-
-    // :: ARRAY, STRING -> STRING
-    // Build comma-separated column list, handling * and table.* patterns
-    private function _buildColumnList(array $columns, string $context): string {
-        if ($columns === ['*']) {
-            return '*';
-        }
-        return implode(', ', array_map(function($col) {
-            if ($col === '*') {
-                return '*';
-            }
-            // table.* — validate table part
-            if (preg_match('/^([a-zA-Z_][a-zA-Z0-9_]*)\.\*$/', $col, $m)) {
-                return $this->validateIdentifier($m[1]) . '.*';
-            }
-            // col as alias or table.col as alias
-            if (preg_match('/^(.+)\s+as\s+(.+)$/i', $col, $m)) {
-                return $this->validateIdentifier(trim($m[1])) . ' as ' . $this->validateIdentifier(trim($m[2]));
-            }
-            // Reject raw expressions — use run() for aggregates
-            if (str_contains($col, '(') || str_contains($col, '*')) {
-                throw new CTGDBError('INVALID_IDENTIFIER',
-                    "Raw expressions not allowed in columns. Use run() for aggregates: {$col}",
-                    ['column' => $col]
-                );
-            }
-            return $this->validateIdentifier($col);
-        }, $columns));
     }
 
     /**

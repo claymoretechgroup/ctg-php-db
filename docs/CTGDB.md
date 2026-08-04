@@ -53,13 +53,13 @@ $db = CTGDB::init([
 
 ## Instance Methods
 
-### ctgdb.run :: STRING|ctgdbQuery, ARRAY -> ARRAY|INT|STRING
+### ctgdb.run :: STRING|ctgdbQuery, ARRAY -> ARRAY
 
 Executes a raw SQL string with optional bound values or a `CTGDBQuery` and
-returns its complete result. Values support both typed form
-(`['type' => 'int', 'value' => 42]`) and PHP type inference. SELECT queries
-return an array of rows, INSERT returns the last insert ID, and UPDATE/DELETE
-return affected-row count. Raw SQL identifiers are the caller's responsibility.
+returns its complete materialized row array. Values support both typed form
+(`['type' => 'int', 'value' => 42]`) and PHP type inference. No matching rows
+returns `[]`; a non-row statement is rejected with `INVALID_QUERY_STATE`.
+Raw SQL identifiers are the caller's responsibility.
 
 ```php
 $users = $db->run('SELECT * FROM users');
@@ -79,7 +79,10 @@ $admins = $db->run(
 Executes a row-producing raw SQL string or `CTGDBQuery`, passes each row and
 the current state to the processor, and returns the final state. This avoids
 materializing rows inside `CTGDB`, although memory usage still depends on what
-the processor retains and on the connection's PDO buffering mode.
+the processor retains and on the connection's PDO buffering mode. Statement
+cursors are closed after processing, including when the processor throws.
+Use `create()`, `update()`, or `delete()` for statements that do not return
+rows.
 
 ```php
 $emails = $db->process(
@@ -115,7 +118,9 @@ $id = $db->create('guitars', [
 
 General-purpose read. The preferred usage is to pass a `CTGDBQuery`
 instance, which provides validated, parameterized query building with
-no raw SQL strings.
+no raw SQL strings. String and array table forms are translated into a
+`CTGDBQuery` before execution, so this method does not maintain separate SELECT
+construction logic.
 
 **Preferred: CTGDBQuery**
 
@@ -132,7 +137,7 @@ $fenders = $db->read(
 
 $db->read(
     CTGDBQuery::from('guitars')
-        ->join('pickups', 'inner', ['guitars.id' => 'pickups.guitar_id'])
+        ->innerJoin('pickups', ['guitars.id' => 'pickups.guitar_id'])
         ->columns('guitars.model', 'pickups.type')
 );
 ```
@@ -141,20 +146,18 @@ When `$tables` is a `CTGDBQuery`, `$config` is ignored — the query
 object contains all configuration. See [CTGDBQuery.md](CTGDBQuery.md)
 for full builder documentation.
 
-**Legacy: string and array forms**
+**Compatibility: string and array forms**
 
-When `tables` is a string, builds a single-table
-SELECT with optional `columns`, `where`, `order`, and `limit` config.
-When `tables` is an array, builds a multi-table join using `join` and
-`on` config. Validates all identifiers, join types, and sort directions.
+When `tables` is a string, `read()` constructs a `CTGDBQuery` with optional
+`columns`, equality-only `where`, `order`, and `limit` configuration. When
+`tables` is an array, it constructs the same query object with `join` and `on`
+configuration. Identifier and keyword validation therefore use the same code
+as direct `CTGDBQuery` usage.
 
-The following config options are **(Deprecated)** — use `CTGDBQuery` instead:
+The following config options are removed:
 - `where` (string form) — use `CTGDBQuery::from()->where()`
 - `where_raw` — use `CTGDBQuery::from()->where()`
 - `as_query` — the `CTGDBQuery` object is the query; no config flag needed
-
-These options remain functional for backward compatibility but must not
-be used in new application code.
 
 ```php
 $guitars = $db->read('guitars');
@@ -244,29 +247,6 @@ $result = $db->paginate('guitars', [
 // $result['pagination'] — {page, per_page, total_rows, total_pages, has_previous, has_next}
 ```
 
-### ctgdb.compose :: [(MIXED, ctgdb -> MIXED)] -> (MIXED -> MIXED)
-
-Builds a function pipeline that threads an accumulator and the DB
-instance through each step. Each function receives
-`($accumulator, $db)`. The returned callable accepts an optional
-initial value. Nothing executes until the returned callable is invoked.
-Use `compose()` for steps that need database access. Standard PHP functions
-and callbacks can perform data transforms within steps without another
-library dependency.
-
-```php
-$pipeline = $db->compose([
-    fn($_, $db) => $db->read(
-        CTGDBQuery::from('guitars')
-            ->where('year_purchased', '>=', 2020, 'int')
-            ->orderBy('year_purchased', 'DESC')
-    ),
-    fn($guitars, $_) => array_map(fn($guitar) => $guitar['make'], $guitars),
-]);
-
-$recentMakes = $pipeline();
-```
-
 ---
 
 ## Protected Methods
@@ -274,39 +254,16 @@ $recentMakes = $pipeline();
 These methods are `protected` to support subclassing for
 application-specific optimization.
 
-### ctgdb.buildWhere :: ARRAY -> [STRING, ARRAY]
+### ctgdb.calcPaginationInfo :: INT, INT, INT -> ARRAY
 
-Builds a WHERE clause from an associative array of equality conditions.
-Returns `[' WHERE col = ? AND ...', [values]]`.
-
-### ctgdb.buildPaginationMeta :: INT, INT, INT -> ARRAY
-
-Calculates pagination metadata from page, per_page, and total.
+Calculates pagination information from page, per_page, and total.
 Returns `{page, per_page, total_rows, total_pages, has_previous, has_next}`.
 
-### ctgdb.validateIdentifier :: STRING -> STRING
-
-Validates and backtick-quotes an identifier. Allows alphanumeric
-characters, underscores, and dots. Throws `INVALID_IDENTIFIER` on
-anything else.
-
-### ctgdb.validateJoinType :: STRING -> STRING
-
-Validates a join type against the allowlist: `inner`, `left`, `right`,
-`cross`. Throws `INVALID_JOIN_TYPE`.
-
-### ctgdb.validateSortDirection :: STRING -> STRING
-
-Validates a sort direction against the allowlist: `asc`, `desc`.
-Throws `INVALID_SORT`.
-
-### ctgdb.validateOperator :: STRING -> STRING
-
-Validates a filter operator against the allowlist: `=`, `>`, `<`,
-`>=`, `<=`, `!=`, `like`, `not like`, `in`, `not in`, `is`, `is not`,
-`between`. Throws `INVALID_OPERATOR`. `CTGDBQuery` uses this same
-validation for its `where()` method.
+SQL identifier quoting and reusable SQL construction are owned by
+`CTGDBQuery`. `CTGDB` uses `CTGDBQuery::quoteIdentifier()` for write
+identifiers and `CTGDBQuery::buildWhere()` for equality-only write predicates.
 
 PDO access is deliberately absent from `CTGDB`. Preparation, binding,
-execution, and result consumption cross the narrow `CTGDBConn::execute()`
-boundary so a raw PDO handle or live statement cannot escape invalidation.
+execution, and result consumption cross the narrow `CTGDBConn::query()`,
+`insert()`, `execute()`, and `process()` boundaries so a raw PDO handle or live
+statement cannot escape invalidation.

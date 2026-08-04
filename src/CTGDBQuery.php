@@ -7,18 +7,18 @@ namespace CTG\DB;
 class CTGDBQuery {
 
     /* Instance Properties */
-    private string $_table;
-    private array $_columns = ['*'];
-    private array $_where = [];
-    private array $_joins = [];
-    private array $_orderBy = [];
-    private array $_groupBy = [];
-    private ?int $_limit = null;
-    private ?int $_offset = null;
+    private string $_table;          // Quoted base table used in the SELECT FROM clause
+    private array $_columns = ['*']; // Validated SELECT column expressions
+    private array $_where = [];      // Parameterized WHERE condition definitions
+    private array $_joins = [];      // Validated JOIN definitions in application order
+    private array $_orderBy = [];    // Validated ORDER BY expressions in application order
+    private array $_groupBy = [];    // Validated GROUP BY column expressions
+    private ?int $_limit = null;     // Maximum number of rows to return, or null for no limit
+    private ?int $_offset = null;    // Number of rows to skip, or null for no offset
 
     // CONSTRUCTOR :: STRING -> $this
     private function __construct(string $table) {
-        $this->_table = self::validateIdentifier($table);
+        $this->_table = self::quoteIdentifier($table);
     }
 
     /**
@@ -39,13 +39,8 @@ class CTGDBQuery {
 
     // :: STRING, STRING, MIXED, ?STRING -> $this
     // Add a WHERE condition (AND-joined with previous conditions)
-    public function where(
-        string  $column,
-        string  $operator,
-        mixed   $value,
-        ?string $type = null
-    ): static {
-        $quotedCol = self::validateIdentifier($column);
+    public function where(string $column, string $operator, mixed $value, ?string $type = null): static {
+        $quotedCol = self::quoteIdentifier($column);
         $op = self::validateOperator($operator);
 
         if ($op === 'IN' || $op === 'NOT IN') {
@@ -95,12 +90,8 @@ class CTGDBQuery {
 
     // :: STRING, STRING, ARRAY -> $this
     // Add a JOIN clause
-    public function join(
-        string $table,
-        string $type,
-        array  $on
-    ): static {
-        $validatedTable = self::validateIdentifier($table);
+    public function join(string $table, string $type, array $on): static {
+        $validatedTable = self::quoteIdentifier($table);
         $validatedType = self::validateJoinType($type);
 
         // Non-cross joins require at least one ON condition
@@ -114,8 +105,8 @@ class CTGDBQuery {
         $onParts = [];
         foreach ($on as $left => $right) {
             $onParts[] = [
-                'left' => self::validateIdentifier($left),
-                'right' => self::validateIdentifier($right),
+                'left' => self::quoteIdentifier($left),
+                'right' => self::quoteIdentifier($right),
             ];
         }
 
@@ -128,6 +119,30 @@ class CTGDBQuery {
         return $this;
     }
 
+    // :: STRING, ARRAY -> $this
+    // Add an INNER JOIN clause through the canonical join builder
+    public function innerJoin(string $table, array $on): static {
+        return $this->join($table, 'inner', $on);
+    }
+
+    // :: STRING, ARRAY -> $this
+    // Add a LEFT JOIN clause through the canonical join builder
+    public function leftJoin(string $table, array $on): static {
+        return $this->join($table, 'left', $on);
+    }
+
+    // :: STRING, ARRAY -> $this
+    // Add a RIGHT JOIN clause through the canonical join builder
+    public function rightJoin(string $table, array $on): static {
+        return $this->join($table, 'right', $on);
+    }
+
+    // :: STRING -> $this
+    // Add a CROSS JOIN clause through the canonical join builder
+    public function crossJoin(string $table): static {
+        return $this->join($table, 'cross', []);
+    }
+
     // :: VOID -> $this
     // Clear all ORDER BY columns
     public function resetOrderBy(): static {
@@ -137,11 +152,8 @@ class CTGDBQuery {
 
     // :: STRING, STRING -> $this
     // Add an ORDER BY column (appends to existing order)
-    public function orderBy(
-        string $column,
-        string $direction = 'ASC'
-    ): static {
-        $quotedCol = self::validateIdentifier($column);
+    public function orderBy(string $column, string $direction = 'ASC'): static {
+        $quotedCol = self::quoteIdentifier($column);
         $dir = self::validateSortDirection($direction);
         $this->_orderBy[] = "{$quotedCol} {$dir}";
         return $this;
@@ -151,7 +163,7 @@ class CTGDBQuery {
     // Set GROUP BY columns
     public function groupBy(string ...$columns): static {
         $this->_groupBy = array_map(
-            fn($col) => self::validateIdentifier($col),
+            fn($col) => self::quoteIdentifier($col),
             $columns
         );
         return $this;
@@ -324,39 +336,9 @@ class CTGDBQuery {
 
     /**
      *
-     * Static Methods
-     *
-     */
-
-    // :: STRING -> ctgdbQuery
-    // Create a query for a single table
-    public static function from(string $table): static {
-        return new static($table);
-    }
-
-    /**
-     *
      * Private Static Methods — Validation
-     * Duplicated from CTGDB to keep CTGDBQuery self-contained
      *
      */
-
-    // :: STRING -> STRING
-    // Validate and backtick-quote an identifier
-    private static function validateIdentifier(string $identifier): string {
-        $clean = trim($identifier, '`');
-        if (!preg_match('/^[a-zA-Z_][a-zA-Z0-9_.]*$/', $clean)) {
-            throw new CTGDBError('INVALID_IDENTIFIER',
-                "Invalid identifier: {$identifier}",
-                ['identifier' => $identifier]
-            );
-        }
-        if (str_contains($clean, '.')) {
-            $parts = explode('.', $clean);
-            return implode('.', array_map(fn($p) => $p === '*' ? '*' : "`{$p}`", $parts));
-        }
-        return "`{$clean}`";
-    }
 
     // :: STRING -> STRING
     // Validate filter operator against allowlist
@@ -418,15 +400,57 @@ class CTGDBQuery {
         if (preg_match('/^(.+)\s+as\s+(.+)$/i', $col, $m)) {
             $left = trim($m[1]);
             $alias = trim($m[2]);
-            return self::validateIdentifier($left) . ' as ' . self::validateIdentifier($alias);
+            return self::quoteIdentifier($left) . ' as ' . self::quoteIdentifier($alias);
         }
 
         // Table wildcard: 'table.*'
         if (preg_match('/^([a-zA-Z_][a-zA-Z0-9_]*)\.\*$/', $col, $m)) {
-            return self::validateIdentifier($m[1]) . '.*';
+            return self::quoteIdentifier($m[1]) . '.*';
         }
 
         // Table-qualified or bare column
-        return self::validateIdentifier($col);
+        return self::quoteIdentifier($col);
+    }
+
+    /**
+     *
+     * Static Methods
+     *
+     */
+
+    // :: ARRAY -> [STRING, ARRAY]
+    // Builds a parameterized equality-only WHERE fragment for CRUD statements
+    public static function buildWhere(array $where): array {
+        $parts = [];
+        $values = [];
+        foreach ($where as $column => $value) {
+            $parts[] = self::quoteIdentifier($column) . ' = ?';
+            $values[] = $value;
+        }
+        $sql = $parts === [] ? '' : ' WHERE ' . implode(' AND ', $parts);
+        return [$sql, $values];
+    }
+
+    // :: STRING -> STRING
+    // Validates and backtick-quotes a SQL identifier for query and CRUD construction
+    public static function quoteIdentifier(string $identifier): string {
+        $clean = trim($identifier, '`');
+        if (!preg_match('/^[a-zA-Z_][a-zA-Z0-9_.]*$/', $clean)) {
+            throw new CTGDBError('INVALID_IDENTIFIER',
+                "Invalid identifier: {$identifier}",
+                ['identifier' => $identifier]
+            );
+        }
+        if (str_contains($clean, '.')) {
+            $parts = explode('.', $clean);
+            return implode('.', array_map(fn($part) => $part === '*' ? '*' : "`{$part}`", $parts));
+        }
+        return "`{$clean}`";
+    }
+
+    // :: STRING -> ctgdbQuery
+    // Create a query for a single table
+    public static function from(string $table): static {
+        return new static($table);
     }
 }

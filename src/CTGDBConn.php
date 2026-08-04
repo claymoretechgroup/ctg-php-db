@@ -117,13 +117,21 @@ class CTGDBConn {
         return $this->_persistent;
     }
 
-    // :: STRING, ARRAY -> ARRAY|INT|STRING
-    // Executes one prepared statement and returns its complete materialized result
-    public function execute(string $sql, array $values = []): array|int|string {
+    // :: STRING, ARRAY -> ARRAY
+    // Executes one row-producing prepared statement and materializes all rows
+    public function query(string $sql, array $values = []): array {
         $PDO = $this->_requirePDO();
         $statement = $this->_executeStatement($PDO, $sql, $values);
-        $columnCount = $this->_statementColumnCount($statement, $sql);
-        if ($columnCount > 0) {
+        $failed = false;
+        try {
+            $columnCount = $this->_statementColumnCount($statement, $sql);
+            if ($columnCount === 0) {
+                throw new CTGDBError(
+                    'INVALID_QUERY_STATE',
+                    'query() requires a row-producing statement',
+                    ['query' => $sql]
+                );
+            }
             $result = [];
             while (true) {
                 $this->_requirePDO();
@@ -133,27 +141,89 @@ class CTGDBConn {
                 }
                 $result[] = $row;
             }
+        } catch (\Throwable $error) {
+            $failed = true;
+            throw $error;
+        } finally {
+            $this->_closeCursor($statement, $sql, $failed);
         }
-        return $this->_statementResult($PDO, $statement, $sql);
+    }
+
+    // :: STRING, ARRAY -> INT
+    // Executes one non-row prepared statement and returns its affected-row count
+    public function execute(string $sql, array $values = []): int {
+        $PDO = $this->_requirePDO();
+        $statement = $this->_executeStatement($PDO, $sql, $values);
+        $failed = false;
+        try {
+            if ($this->_statementColumnCount($statement, $sql) > 0) {
+                throw new CTGDBError(
+                    'INVALID_QUERY_STATE',
+                    'execute() does not accept row-producing statements',
+                    ['query' => $sql]
+                );
+            }
+            return $this->_statementRowCount($statement, $sql);
+        } catch (\Throwable $error) {
+            $failed = true;
+            throw $error;
+        } finally {
+            $this->_closeCursor($statement, $sql, $failed);
+        }
+    }
+
+    // :: STRING, ARRAY -> INT|STRING
+    // Executes one insert statement and returns its last insert identifier
+    public function insert(string $sql, array $values = []): int|string {
+        $PDO = $this->_requirePDO();
+        $statement = $this->_executeStatement($PDO, $sql, $values);
+        $failed = false;
+        try {
+            if ($this->_statementColumnCount($statement, $sql) > 0) {
+                throw new CTGDBError(
+                    'INVALID_QUERY_STATE',
+                    'insert() does not accept row-producing statements',
+                    ['query' => $sql]
+                );
+            }
+            return $this->_lastInsertId($PDO, $sql);
+        } catch (\Throwable $error) {
+            $failed = true;
+            throw $error;
+        } finally {
+            $this->_closeCursor($statement, $sql, $failed);
+        }
     }
 
     // :: STRING, (ARRAY, MIXED -> MIXED), MIXED, ARRAY -> MIXED
-    // Processes one prepared statement result row at a time and returns final state
+    // Processes one row-producing statement result at a time and returns final state
     public function process(string $sql, callable $processor, mixed $initial = null, array $values = []): mixed {
         $PDO = $this->_requirePDO();
         $statement = $this->_executeStatement($PDO, $sql, $values);
-        if ($this->_statementColumnCount($statement, $sql) === 0) {
-            return $initial;
-        }
-
-        $result = $initial;
-        while (true) {
-            $this->_requirePDO();
-            $row = $this->_fetchRow($statement, $sql);
-            if ($row === false) {
-                return $result;
+        $failed = false;
+        try {
+            if ($this->_statementColumnCount($statement, $sql) === 0) {
+                throw new CTGDBError(
+                    'INVALID_QUERY_STATE',
+                    'process() requires a row-producing statement',
+                    ['query' => $sql]
+                );
             }
-            $result = $processor($row, $result);
+
+            $result = $initial;
+            while (true) {
+                $this->_requirePDO();
+                $row = $this->_fetchRow($statement, $sql);
+                if ($row === false) {
+                    return $result;
+                }
+                $result = $processor($row, $result);
+            }
+        } catch (\Throwable $error) {
+            $failed = true;
+            throw $error;
+        } finally {
+            $this->_closeCursor($statement, $sql, $failed);
         }
     }
 
@@ -196,25 +266,48 @@ class CTGDBConn {
         }
     }
 
-    // :: \PDO, \PDOStatement, STRING -> INT|STRING
-    // Returns an insert identifier or affected-row count for a completed statement
-    private function _statementResult(\PDO $PDO, \PDOStatement $statement, string $sql): int|string {
-        if (str_starts_with(strtoupper(ltrim($sql)), 'INSERT')) {
-            try {
-                $insertId = $PDO->lastInsertId();
-            } catch (\PDOException $error) {
-                throw $this->_queryError($error, $sql);
+    // :: \PDOStatement, STRING, BOOL -> VOID
+    // Closes a statement cursor without masking an exception already in flight
+    private function _closeCursor(\PDOStatement $statement, string $sql, bool $preserveFailure): void {
+        try {
+            if ($statement->closeCursor() !== true) {
+                throw new \PDOException('PDO failed to close the statement cursor');
             }
-            if ($insertId === false) {
-                throw new CTGDBError('QUERY_FAILED', 'PDO did not return a last insert identifier', ['query' => $sql]);
+        } catch (\PDOException $error) {
+            $mapped = $this->_queryError($error, $sql);
+            $this->invalidate();
+            if ($preserveFailure) {
+                return;
             }
-            return $insertId;
+            $data = is_array($mapped->data) ? $mapped->data : [];
+            $data['cursor_cleanup_failed'] = true;
+            $data['connection_invalidated'] = true;
+            throw new CTGDBError($mapped->type, $mapped->msg, $data);
         }
+    }
+
+    // :: \PDOStatement, STRING -> INT
+    // Returns the affected-row count for a completed non-row statement
+    private function _statementRowCount(\PDOStatement $statement, string $sql): int {
         try {
             return $statement->rowCount();
         } catch (\PDOException $error) {
             throw $this->_queryError($error, $sql);
         }
+    }
+
+    // :: \PDO, STRING -> INT|STRING
+    // Returns the last insert identifier for a completed insert statement
+    private function _lastInsertId(\PDO $PDO, string $sql): int|string {
+        try {
+            $insertId = $PDO->lastInsertId();
+        } catch (\PDOException $error) {
+            throw $this->_queryError($error, $sql);
+        }
+        if ($insertId === false) {
+            throw new CTGDBError('QUERY_FAILED', 'PDO did not return a last insert identifier', ['query' => $sql]);
+        }
+        return $insertId;
     }
 
     // :: VOID -> \PDO

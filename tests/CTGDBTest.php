@@ -104,9 +104,9 @@ return [
         ->stage('exercise', function(CTGTestState $s) use ($dbConfig) {
             $victimConnection = CTGDBConn::init($dbConfig());
             $victim = new CTGDB($victimConnection);
-            $killer = CTGDB::init($dbConfig());
+            $killer = CTGDBConn::init($dbConfig());
             $connectionId = (int)$victim->run('SELECT CONNECTION_ID() AS connection_id')[0]['connection_id'];
-            $killer->run("KILL CONNECTION {$connectionId}");
+            $killer->execute("KILL CONNECTION {$connectionId}");
             try {
                 $victim->run('SELECT 1');
                 $type = 'no exception';
@@ -168,6 +168,23 @@ return [
         ->assert('returns 1 row', fn(CTGTestState $s) => $s->getSubject(), CTGTestPredicates::hasCount(1))
         ->assert('is Ibanez', fn(CTGTestState $s) => $s->getSubject()[0]['make'], CTGTestPredicates::equals('Ibanez')),
 
+    CTGTest::init('run — no matching rows returns an empty array')
+        ->stage('connect', fn(CTGTestState $s) => CTGDB::init($dbConfig()))
+        ->stage('execute', fn(CTGTestState $s) => $s->getSubject()->run('SELECT * FROM guitars WHERE id = ?', [-1]))
+        ->assert('returns array', fn(CTGTestState $s) => $s->getSubject(), CTGTestPredicates::isType('array'))
+        ->assert('returns no rows', fn(CTGTestState $s) => $s->getSubject(), CTGTestPredicates::hasCount(0)),
+
+    CTGTest::init('run — rejects non-row statements')
+        ->stage('attempt', function(CTGTestState $s) use ($dbConfig) {
+            try {
+                CTGDB::init($dbConfig())->run('DO 1');
+                return 'no exception';
+            } catch (CTGDBError $error) {
+                return $error->type;
+            }
+        })
+        ->assert('throws INVALID_QUERY_STATE', fn(CTGTestState $s) => $s->getSubject(), CTGTestPredicates::equals('INVALID_QUERY_STATE')),
+
     // ── process() — incremental result handling ────────────────────
 
     CTGTest::init('process — extracts column')
@@ -225,7 +242,7 @@ return [
         ->assert('make is PRS', fn(CTGTestState $s) => $s->getSubject()[0]['make'], CTGTestPredicates::equals('PRS'))
         ->assert('model is Custom 24', fn(CTGTestState $s) => $s->getSubject()[0]['model'], CTGTestPredicates::equals('Custom 24'))
         ->stage('cleanup', fn(CTGTestState $s) => CTGDB::init($dbConfig())
-            ->run("DELETE FROM guitars WHERE make = 'PRS'")),
+            ->delete('guitars', ['make' => 'PRS'])),
 
     CTGTest::init('create — untyped values')
         ->stage('connect', fn(CTGTestState $s) => CTGDB::init($dbConfig()))
@@ -239,7 +256,7 @@ return [
             ])
         ])
         ->assert('returns insert id', fn(CTGTestState $s) => is_numeric($s->getSubject()['id']), CTGTestPredicates::isTrue())
-        ->stage('cleanup', fn(CTGTestState $s) => $s->getSubject()['db']->run("DELETE FROM guitars WHERE make = 'Jackson'")),
+        ->stage('cleanup', fn(CTGTestState $s) => $s->getSubject()['db']->delete('guitars', ['make' => 'Jackson'])),
 
     // ── read() via CTGDBQuery — single table ────────────────────────
 
@@ -312,6 +329,23 @@ return [
                 ->where('pickups.type', '=', 'active', 'str')
         ))
         ->assert('only active pickups', fn(CTGTestState $s) => $s->getSubject(), CTGTestPredicates::hasCount(2)),
+
+    CTGTest::init('read legacy config — translates join through CTGDBQuery')
+        ->stage('connect', fn(CTGTestState $s) => CTGDB::init($dbConfig()))
+        ->stage('execute', fn(CTGTestState $s) => $s->getSubject()->read(
+            ['guitars', 'pickups'],
+            [
+                'join' => 'inner',
+                'on' => [['guitars.id' => 'pickups.guitar_id']],
+                'columns' => ['guitars.model', 'pickups.type'],
+                'where' => ['pickups.type' => ['type' => 'str', 'value' => 'active']],
+                'order' => 'guitars.id ASC',
+                'limit' => 2,
+            ]
+        ))
+        ->assert('returns configured rows', fn(CTGTestState $s) => $s->getSubject(), CTGTestPredicates::hasCount(2))
+        ->assert('returns selected model', fn(CTGTestState $s) => isset($s->getSubject()[0]['model']), CTGTestPredicates::isTrue())
+        ->assert('returns selected pickup type', fn(CTGTestState $s) => $s->getSubject()[0]['type'], CTGTestPredicates::equals('active')),
 
     // ── update() ────────────────────────────────────────────────────
 
@@ -415,7 +449,7 @@ return [
             'id' => $s->getSubject()['id'],
             'rows' => $s->getSubject()['db']->read(
                 CTGDBQuery::from('guitars')
-                    ->join('pickups', 'left', ['guitars.id' => 'pickups.guitar_id'])
+                    ->leftJoin('pickups', ['guitars.id' => 'pickups.guitar_id'])
                     ->columns('guitars.model', 'pickups.position')
                     ->where('guitars.make', '=', 'Orphan', 'str')
             )

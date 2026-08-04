@@ -53,11 +53,11 @@ return [
         ->stage('execute', function(CTGTestState $s) use ($connectionConfig) {
             $connection = CTGDBConn::init($connectionConfig());
             return [
-                'rows' => $connection->execute(
+                'rows' => $connection->query(
                     'SELECT make FROM guitars WHERE id = ?',
                     [['type' => 'int', 'value' => 1]]
                 ),
-                'typed_null' => $connection->execute(
+                'typed_null' => $connection->query(
                     'SELECT ? IS NULL AS is_null',
                     [['type' => 'null', 'value' => null]]
                 ),
@@ -73,6 +73,62 @@ return [
         ->assert('binds an explicitly typed null', fn(CTGTestState $s) => (int)$s->getSubject()['typed_null'][0]['is_null'], CTGTestPredicates::equals(1))
         ->assert('processes rows incrementally', fn(CTGTestState $s) => $s->getSubject()['processed'][0], CTGTestPredicates::equals('Ibanez'))
         ->assert('raw PDO accessor is not callable', fn(CTGTestState $s) => $s->getSubject()['raw_pdo_callable'], CTGTestPredicates::isFalse()),
+
+    CTGTest::init('connection — processor failure closes cursor and preserves connection')
+        ->stage('exercise', function(CTGTestState $s) use ($connectionConfig) {
+            $connection = CTGDBConn::init($connectionConfig());
+            try {
+                $connection->process(
+                    'SELECT id FROM guitars ORDER BY id',
+                    fn($row, $result) => throw new \RuntimeException('processor failed'),
+                    null
+                );
+                $message = 'no exception';
+            } catch (\RuntimeException $error) {
+                $message = $error->getMessage();
+            }
+            return [
+                'message' => $message,
+                'follow_up' => $connection->query('SELECT 1 AS available'),
+                'invalidated' => $connection->isInvalidated(),
+            ];
+        })
+        ->assert('preserves processor exception', fn(CTGTestState $s) => $s->getSubject()['message'], CTGTestPredicates::equals('processor failed'))
+        ->assert('permits a subsequent query', fn(CTGTestState $s) => (int)$s->getSubject()['follow_up'][0]['available'], CTGTestPredicates::equals(1))
+        ->assert('connection remains valid', fn(CTGTestState $s) => $s->getSubject()['invalidated'], CTGTestPredicates::isFalse()),
+
+    CTGTest::init('connection — query rejects non-row statements')
+        ->stage('attempt', function(CTGTestState $s) use ($connectionConfig) {
+            try {
+                CTGDBConn::init($connectionConfig())->query('DO 1');
+                return 'no exception';
+            } catch (CTGDBError $error) {
+                return $error->type;
+            }
+        })
+        ->assert('throws INVALID_QUERY_STATE', fn(CTGTestState $s) => $s->getSubject(), CTGTestPredicates::equals('INVALID_QUERY_STATE')),
+
+    CTGTest::init('connection — execute rejects row-producing statements')
+        ->stage('attempt', function(CTGTestState $s) use ($connectionConfig) {
+            try {
+                CTGDBConn::init($connectionConfig())->execute('SELECT 1');
+                return 'no exception';
+            } catch (CTGDBError $error) {
+                return $error->type;
+            }
+        })
+        ->assert('throws INVALID_QUERY_STATE', fn(CTGTestState $s) => $s->getSubject(), CTGTestPredicates::equals('INVALID_QUERY_STATE')),
+
+    CTGTest::init('connection — process rejects non-row statements')
+        ->stage('attempt', function(CTGTestState $s) use ($connectionConfig) {
+            try {
+                CTGDBConn::init($connectionConfig())->process('DO 1', fn($row, $state) => $state, null);
+                return 'no exception';
+            } catch (CTGDBError $error) {
+                return $error->type;
+            }
+        })
+        ->assert('throws INVALID_QUERY_STATE', fn(CTGTestState $s) => $s->getSubject(), CTGTestPredicates::equals('INVALID_QUERY_STATE')),
 
     CTGTest::init('connection — bad credentials map to CTGDBError')
         ->stage('attempt', function(CTGTestState $s) use ($connectionConfig) {

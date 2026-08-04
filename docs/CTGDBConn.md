@@ -79,32 +79,64 @@ $connection = CTGDBConn::init([
 
 ---
 
-## Execution Method
+## Execution Methods
 
-### ctgdbConn.execute :: STRING, ARRAY -> ARRAY|INT|STRING
+### ctgdbConn.query :: STRING, ARRAY -> ARRAY
 
 Prepares one SQL statement, binds positional or named values, executes it, and
-consumes the result without returning PDO or `PDOStatement`. Row-producing
-statements return a complete materialized array, inserts return the last insert
-ID, and other statements return their affected-row count.
+materializes every returned row without exposing PDO or `PDOStatement`. A
+query with no matching rows returns `[]`. Statements that do not produce
+columns are rejected with `INVALID_QUERY_STATE`.
 
-Connection loss during preparation, execution, fetching, or insert-ID lookup
-permanently invalidates the connection. Constraint and duplicate-entry errors
-retain the public `CTGDBError` classifications. `CTGDB::run()` is the normal
-application-facing entry point and delegates to this boundary.
+`CTGDB::run()` delegates to this row-only boundary. The statement cursor is
+closed after all rows have been consumed.
 
 ```php
-$rows = $connection->execute(
+$rows = $connection->query(
     'SELECT id, email FROM users WHERE active = ?',
     [['type' => 'bool', 'value' => true]]
 );
 ```
 
+### ctgdbConn.execute :: STRING, ARRAY -> INT
+
+Prepares and executes one non-row statement and returns its affected-row
+count. Row-producing statements are rejected with `INVALID_QUERY_STATE`.
+`CTGDB::update()` and `CTGDB::delete()` delegate to this boundary.
+
+```php
+$affected = $connection->execute(
+    'UPDATE users SET active = ? WHERE last_login < ?',
+    [false, '2025-01-01']
+);
+```
+
+### ctgdbConn.insert :: STRING, ARRAY -> INT|STRING
+
+Prepares and executes one insert and returns the last insert identifier.
+Row-producing statements are rejected with `INVALID_QUERY_STATE`.
+`CTGDB::create()` delegates to this boundary.
+
+```php
+$id = $connection->insert(
+    'INSERT INTO users (email) VALUES (?)',
+    ['user@example.com']
+);
+```
+
+Connection loss during preparation, execution, fetching, row-count lookup, or
+insert-ID lookup permanently invalidates the connection. Constraint and
+duplicate-entry errors retain the public `CTGDBError` classifications. Every
+statement cursor is closed after its result has been consumed.
+
 ### ctgdbConn.process :: STRING, (ARRAY, MIXED -> MIXED), MIXED, ARRAY -> MIXED
 
 Prepares and executes a row-producing statement, passes each row and current
 state to the processor, and returns the final state. It does not materialize
-rows internally and does not expose the live PDO statement.
+rows internally and does not expose the live PDO statement. The cursor is
+closed even when the processor throws, and the original processor exception is
+preserved. Use `query()` for materialized rows, `execute()` for affected-row
+commands, or `insert()` for insert identifiers.
 
 ```php
 $count = $connection->process(
@@ -171,11 +203,13 @@ Reports whether persistent PDO pooling was requested at construction.
 
 ## PDO Encapsulation
 
-There is no public or protected PDO accessor. `CTGDBConn::execute()` is the
-narrow driver boundary, and it never returns a raw PDO handle or live
-`PDOStatement`. This prevents callers and subclasses from retaining a driver
-object that could continue operating after the wrapper is invalidated.
+There is no public or protected PDO accessor. `CTGDBConn::query()`,
+`execute()`, `insert()`, and `process()` are narrow driver boundaries that
+never return a raw PDO handle or live `PDOStatement`. This prevents callers and
+subclasses from retaining a driver object that could continue operating after
+the wrapper is invalidated.
 
-`CTGDB` composes a `CTGDBConn` and uses `execute()` for its `run()` primitive.
-It does not forward the connection lifecycle API. Callers needing transaction
-or invalidation control retain the connection they inject into `CTGDB`.
+`CTGDB` composes a `CTGDBConn` and uses `query()` for `run()`, `insert()` for
+`create()`, and `execute()` for `update()` and `delete()`. It does not forward
+the connection lifecycle API. Callers needing transaction or invalidation
+control retain the connection they inject into `CTGDB`.

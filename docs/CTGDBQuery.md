@@ -2,15 +2,15 @@
 
 ## Overview
 
-A fluent query builder that produces the `['sql' => ..., 'values' => [...]]`
-statement array that `run()` already accepts. It exists to eliminate raw SQL
-strings from the library's read path.
+A fluent query builder and centralized SQL-construction component. Its instance
+API owns SELECT construction and produces internal
+`['sql' => ..., 'values' => [...]]` statements for `CTGDB`; its static helpers
+provide the shared identifier and equality-WHERE construction used by CRUD.
 
 **Primary motivation: AI safety.** When an LLM generates code against this
-library, `read()` currently accepts raw SQL in `where`, `having`, and column
-expressions. An LLM will naturally reach for the string path and interpolate
-user input. `CTGDBQuery` removes the string path: every query element is
-structured, validated, and parameterized by construction.
+library, raw SQL fragments create opportunities to interpolate user input.
+`CTGDBQuery` removes that path from structured reads: every query element is
+validated and every value is parameterized by construction.
 
 **Trust boundary:** `CTGDBQuery` handles SELECT, JOINs, WHERE conditions,
 ORDER BY, GROUP BY, LIMIT/OFFSET, and pagination. Anything the builder
@@ -22,6 +22,8 @@ the explicit trust boundary.
 - `CTGDBQuery` is a standalone class in `CTG\DB`
 - It is consumed directly by `run()`, `process()`, `read()`, and `paginate()`
 - `read()` and `paginate()` accept `CTGDBQuery` instances
+- Legacy table/config reads are translated into `CTGDBQuery` method calls
+- `quoteIdentifier()` is the canonical identifier validator used by CRUD
 - `CTGDBQuery` does not execute queries — execution is always through `CTGDB`
 
 ---
@@ -39,6 +41,14 @@ class CTGDBQuery
     // Create a query for a single table
     public static function from(string $table): static;
 
+    // :: STRING -> STRING
+    // Validate and backtick-quote a bare or table-qualified identifier
+    public static function quoteIdentifier(string $identifier): string;
+
+    // :: ARRAY -> [STRING, ARRAY]
+    // Build a parameterized equality-only WHERE fragment for CRUD statements
+    public static function buildWhere(array $where): array;
+
     // ─── Column Selection ──────────────────────────────────
 
     // :: STRING, STRING, ... -> $this
@@ -50,32 +60,26 @@ class CTGDBQuery
 
     // :: STRING, STRING, MIXED, ?STRING -> $this
     // Add a WHERE condition (AND-joined with previous conditions)
-    public function where(
-        string  $column,
-        string  $operator,
-        mixed   $value,
-        ?string $type = null
-    ): static;
+    public function where(string $column, string $operator, mixed $value, ?string $type = null): static;
 
     // ─── JOINs ─────────────────────────────────────────────
 
     // :: STRING, STRING, ARRAY -> $this
     // Add a JOIN clause
     // $on is associative: ['left.col' => 'right.col', ...]
-    public function join(
-        string $table,
-        string $type,
-        array  $on
-    ): static;
+    public function join(string $table, string $type, array $on): static;
+
+    // Convenience methods delegating to join()
+    public function innerJoin(string $table, array $on): static;
+    public function leftJoin(string $table, array $on): static;
+    public function rightJoin(string $table, array $on): static;
+    public function crossJoin(string $table): static;
 
     // ─── ORDER BY ──────────────────────────────────────────
 
     // :: STRING, STRING -> $this
     // Add an ORDER BY column (appends to existing order)
-    public function orderBy(
-        string $column,
-        string $direction = 'ASC'
-    ): static;
+    public function orderBy(string $column, string $direction = 'ASC'): static;
 
     // ─── GROUP BY ──────────────────────────────────────────
 
@@ -118,8 +122,31 @@ class CTGDBQuery
 $query = CTGDBQuery::from('guitars');
 ```
 
-The table name is validated with the same identifier rules as CTGDB. Invalid
-identifiers throw `CTGDBError` with type `INVALID_IDENTIFIER`.
+The table name is validated by `CTGDBQuery::quoteIdentifier()`. The same method
+is used for identifiers in `CTGDB` write operations, leaving one canonical
+implementation. Invalid identifiers throw `CTGDBError` with type
+`INVALID_IDENTIFIER`. Wildcards and aliases are column expressions and are
+handled through `columns()`, not `quoteIdentifier()`.
+
+### Static CRUD WHERE Construction
+
+`buildWhere()` centralizes the equality-only predicate format used by
+`update()` and `delete()`. It validates every column identifier, returns only
+`?` placeholders in the SQL fragment, and preserves the values separately for
+PDO binding:
+
+```php
+[$sql, $values] = CTGDBQuery::buildWhere([
+    'tenant_id' => ['type' => 'int', 'value' => 7],
+    'active' => true,
+]);
+
+// $sql:    ' WHERE `tenant_id` = ? AND `active` = ?'
+// $values: [['type' => 'int', 'value' => 7], true]
+```
+
+This helper does not accept raw conditions or operators. Rich SELECT
+conditions continue to use the instance `where()` method.
 
 Multi-table queries are expressed through `join()`, not through the factory:
 
@@ -147,7 +174,7 @@ $query = CTGDBQuery::from('guitars')
 
 ### Supported Operators
 
-Same set as `filter()` and `validateOperator()`:
+Supported operators:
 
 | Operator | Value form | SQL generated |
 |----------|-----------|---------------|
@@ -170,8 +197,8 @@ Same set as `filter()` and `validateOperator()`:
 
 ### Validation
 
-- `$column` is validated with `validateIdentifier()`
-- `$operator` is validated with `validateOperator()`
+- `$column` is validated with `quoteIdentifier()`
+- `$operator` is checked against the private operator allowlist
 - Invalid inputs throw `CTGDBError` with the appropriate type
 
 ---
@@ -183,18 +210,18 @@ Same set as `filter()` and `validateOperator()`:
 Adds a JOIN clause. Multiple calls add multiple joins in order.
 
 ```php
-// Inner join
+// Canonical join method
 $query = CTGDBQuery::from('guitars')
     ->join('pickups', 'inner', ['guitars.id' => 'pickups.guitar_id']);
 
-// Left join
+// Convenience methods
 $query = CTGDBQuery::from('guitars')
-    ->join('pickups', 'left', ['guitars.id' => 'pickups.guitar_id']);
+    ->leftJoin('pickups', ['guitars.id' => 'pickups.guitar_id']);
 
 // Multiple joins
 $query = CTGDBQuery::from('articles')
-    ->join('categories', 'left', ['articles.category_id' => 'categories.id'])
-    ->join('users', 'inner', ['articles.author_id' => 'users.id']);
+    ->leftJoin('categories', ['articles.category_id' => 'categories.id'])
+    ->innerJoin('users', ['articles.author_id' => 'users.id']);
 
 // Composite ON keys
 $query = CTGDBQuery::from('orders')
@@ -208,11 +235,22 @@ $query = CTGDBQuery::from('orders')
 
 ### Parameters
 
-- `$table` — validated with `validateIdentifier()`
-- `$type` — validated with `validateJoinType()`: `'inner'`, `'left'`,
+- `$table` — validated with `quoteIdentifier()`
+- `$type` — checked against the join-type allowlist: `'inner'`, `'left'`,
   `'right'`, `'cross'`
 - `$on` — associative array of column equality pairs. Both sides validated
-  with `validateIdentifier()`. For `cross` joins, `$on` must be empty.
+  with `quoteIdentifier()`. For `cross` joins, `$on` must be empty.
+
+### Join Convenience Methods
+
+- `innerJoin($table, $on)` delegates to `join($table, 'inner', $on)`.
+- `leftJoin($table, $on)` delegates to `join($table, 'left', $on)`.
+- `rightJoin($table, $on)` delegates to `join($table, 'right', $on)`.
+- `crossJoin($table)` delegates to `join($table, 'cross', [])`.
+
+There is no generic `outerJoin()` because the direction would be ambiguous.
+`LEFT OUTER JOIN` and `RIGHT OUTER JOIN` are represented by `leftJoin()` and
+`rightJoin()`. MariaDB does not directly support `FULL OUTER JOIN`.
 
 ---
 
@@ -274,8 +312,8 @@ CTGDBQuery::from('guitars')->orderBy('make');
 // ORDER BY `make` ASC
 ```
 
-- `$column` — validated with `validateIdentifier()`, supports `table.col`
-- `$direction` — validated with `validateSortDirection()`, defaults to `'ASC'`
+- `$column` — validated with `quoteIdentifier()`, supports `table.col`
+- `$direction` — checked against the sort-direction allowlist and defaults to `'ASC'`
 
 ---
 
@@ -293,7 +331,7 @@ CTGDBQuery::from('guitars')->groupBy('make', 'color');
 // GROUP BY `make`, `color`
 ```
 
-Each column is validated with `validateIdentifier()`.
+Each column is validated with `quoteIdentifier()`.
 
 ---
 
@@ -530,40 +568,21 @@ $query = CTGDBQuery::from('guitars')
 $result = $db->paginate($query, ['sort' => 'guitars.make', 'page' => 1]);
 ```
 
-### Compose pipeline
-
-```php
-$pipeline = $db->compose([
-    fn($_, $db) => $db->read(
-        CTGDBQuery::from('guitars')
-            ->where('make', '=', 'Fender', 'str')
-            ->orderBy('year_purchased', 'DESC')
-    ),
-    fn($guitars, $_) => array_map(fn($guitar) => [
-        'make' => $guitar['make'],
-        'model' => $guitar['model'],
-        'color' => $guitar['color'],
-    ], $guitars),
-]);
-
-$result = $pipeline();
-```
-
 ---
 
 ## What It Replaces
 
 | Current API | Status | Replacement |
 |------------|--------|-------------|
-| `filter()` | Deprecated | `CTGDBQuery::from()->where()` with full operator support |
-| `join()` shortcut | Deprecated | `CTGDBQuery::from()->join(..., 'inner', ...)` |
-| `leftJoin()` shortcut | Deprecated | `CTGDBQuery::from()->join(..., 'left', ...)` |
-| `as_query` config | Deprecated | The query object is the query |
-| `where` as string in `read()` | Superseded | `CTGDBQuery::from()->where()` |
-| `where_raw` config | Superseded | Not needed |
+| `filter()` | Removed | `CTGDBQuery::from()->where()` with full operator support |
+| `CTGDB::join()` shortcut | Removed | `CTGDBQuery::from()->innerJoin(...)` |
+| `CTGDB::leftJoin()` shortcut | Removed | `CTGDBQuery::from()->leftJoin(...)` |
+| `as_query` config | Removed | The query object is the query |
+| `where` as string in `read()` | Removed | `CTGDBQuery::from()->where()` |
+| `where_raw` config | Removed | `CTGDBQuery::from()->where()` |
 
-Deprecated methods remain functional for backward compatibility. Raw string
-paths on `read()` remain available but are not used with `CTGDBQuery`.
+`read()` no longer accepts raw WHERE or HAVING fragments. Its compatibility
+table/config form is translated into structured `CTGDBQuery` calls.
 
 ## What It Does NOT Replace
 
@@ -571,8 +590,6 @@ paths on `read()` remain available but are not used with `CTGDBQuery`.
   queries the builder cannot express
 - `create()`, `update()`, `delete()` — write operations are already
   fully parameterized
-- `compose()` — pipelines work with `CTGDBQuery` naturally
-
 ---
 
 ## Safety Policy
@@ -603,19 +620,20 @@ unless the query cannot be expressed with the builder.
 └─────────────────────────────────────────────────┘
 ```
 
-### Deprecation Status
+### Compatibility Status
 
-The following are deprecated as of this spec. They remain functional for
-backward compatibility but must not be used in new application code:
+Legacy table/config reads remain available but are translated into
+`CTGDBQuery`. Removed raw-fragment paths stay rejected:
 
 | Path | Status | Notes |
 |------|--------|-------|
-| `read()` with string `where` | **Deprecated** | Internal/compat only |
-| `read()` with `where_raw` | **Deprecated** | Internal/compat only |
-| `read()` with string `having` | **Deprecated** | Internal/compat only |
-| `filter()` | **Deprecated** | Use `CTGDBQuery::from()->where()` |
-| `join()` / `leftJoin()` shortcuts | **Deprecated** | Use `CTGDBQuery::from()->join()` |
-| `as_query` config option | **Deprecated** | The query object is the query |
+| Table/config `read()` | **Compatibility** | Translated into `CTGDBQuery` |
+| `read()` with string `where` | **Removed** | Use `where()` |
+| `read()` with `where_raw` | **Removed** | Use `where()` |
+| `read()` with string `having` | **Removed** | Not supported |
+| `filter()` | **Removed** | Use `CTGDBQuery::from()->where()` |
+| `CTGDB::join()` / `leftJoin()` shortcuts | **Removed** | Use the corresponding `CTGDBQuery` join methods |
+| `as_query` config option | **Removed** | The query object is the query |
 
 ### Release Gate: `run()` Audit
 

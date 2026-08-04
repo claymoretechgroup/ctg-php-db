@@ -29,7 +29,7 @@ $dbConfig = fn(array $config = []): array => array_replace([
 
 // ═══════════════════════════════════════════════════════════════
 // TABLE NAME INJECTION
-// Table names are interpolated into SQL — validateIdentifier must
+// Table names are interpolated into SQL — quoteIdentifier must
 // reject anything that could alter query structure
 // ═══════════════════════════════════════════════════════════════
 
@@ -116,7 +116,7 @@ $pipelines[] = CTGTest::init('table injection — guitars table survived')
 // ═══════════════════════════════════════════════════════════════
 // COLUMN NAME INJECTION
 // Column names in create/update/where are interpolated via
-// validateIdentifier
+// quoteIdentifier
 // ═══════════════════════════════════════════════════════════════
 
 $columnPayloads = [
@@ -404,7 +404,7 @@ $pipelines[] = CTGTest::init('batch injection — multiple injection vectors at 
 
 // ═══════════════════════════════════════════════════════════════
 // SORT COLUMN INJECTION (paginate)
-// Sort column is now validated through validateIdentifier
+// Sort column is validated through CTGDBQuery identifier quoting
 // ═══════════════════════════════════════════════════════════════
 
 $sortColPayloads = [
@@ -469,7 +469,7 @@ foreach ($onPayloads as $label => $payload) {
 
 // ═══════════════════════════════════════════════════════════════
 // ORDER CLAUSE INJECTION (CTGDBQuery)
-// ORDER BY column is validated through validateIdentifier
+// ORDER BY column is validated through CTGDBQuery identifier quoting
 // ═══════════════════════════════════════════════════════════════
 
 $orderPayloads = [
