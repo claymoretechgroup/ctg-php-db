@@ -50,33 +50,34 @@ return [
         ->assert('returns CTGDB instance', fn(CTGTestState $s) => $s->getSubject()['db'], CTGTestPredicates::isInstanceOf(CTGDB::class))
         ->assert('uses supplied connection instance', fn(CTGTestState $s) => $s->getSubject()['rejected'], CTGTestPredicates::isTrue()),
 
-    CTGTest::init('transaction — main API controls supplied connection')
+    CTGTest::init('transaction — main API participates through supplied connection')
         ->stage('exercise', function(CTGTestState $s) use ($dbConfig) {
             $connection = CTGDBConn::init($dbConfig());
             $db = new CTGDB($connection);
-            $db->beginTransaction();
-            $activeBeforeQuery = $db->inTransaction();
+            $connection->beginTransaction();
+            $activeBeforeQuery = $connection->inTransaction();
             $queryResult = $db->run('SELECT 1 AS inside_transaction');
-            $db->rollBack();
+            $connection->rollBack();
             return [
                 'active_before_query' => $activeBeforeQuery,
                 'query_result' => (int)$queryResult[0]['inside_transaction'],
-                'active_after_rollback' => $db->inTransaction(),
+                'active_after_rollback' => $connection->inTransaction(),
             ];
         })
         ->assert('transaction is active', fn(CTGTestState $s) => $s->getSubject()['active_before_query'], CTGTestPredicates::isTrue())
         ->assert('query executes within transaction', fn(CTGTestState $s) => $s->getSubject()['query_result'], CTGTestPredicates::equals(1))
         ->assert('rollback ends transaction', fn(CTGTestState $s) => $s->getSubject()['active_after_rollback'], CTGTestPredicates::isFalse()),
 
-    CTGTest::init('transaction — main API commits active transaction')
+    CTGTest::init('transaction — main API operations commit through supplied connection')
         ->stage('exercise', function(CTGTestState $s) use ($dbConfig) {
-            $db = CTGDB::init($dbConfig());
-            $db->beginTransaction();
+            $connection = CTGDBConn::init($dbConfig());
+            $db = new CTGDB($connection);
+            $connection->beginTransaction();
             $affected = $db->execute('UPDATE guitars SET color = color WHERE id = ?', [-1]);
-            $db->commit();
+            $connection->commit();
             return [
                 'affected' => $affected,
-                'active_after_commit' => $db->inTransaction(),
+                'active_after_commit' => $connection->inTransaction(),
             ];
         })
         ->assert('execute returns affected-row count', fn(CTGTestState $s) => $s->getSubject()['affected'], CTGTestPredicates::equals(0))

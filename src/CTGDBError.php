@@ -7,42 +7,38 @@ namespace CTG\DB;
 class CTGDBError extends \Exception {
 
     /* Constants */
-    const TYPES = [
+    public const TYPES = [
         // 1xxx — Connection
-        'CONNECTION_FAILED'    => 1000,
-        'CONNECTION_TIMEOUT'   => 1001,
-        'AUTH_FAILED'          => 1002,
+        'CONNECTION_FAILED'    => 1000, // General database connection failure
+        'CONNECTION_TIMEOUT'   => 1001, // Database connection attempt timed out
+        'AUTH_FAILED'          => 1002, // Database authentication was rejected
         // 2xxx — Query execution
-        'QUERY_FAILED'         => 2000,
-        'DUPLICATE_ENTRY'      => 2001,
-        'CONSTRAINT_VIOLATION' => 2002,
+        'QUERY_FAILED'         => 2000, // General prepared-statement execution failure
+        'DUPLICATE_ENTRY'      => 2001, // Unique or duplicate-key constraint failure
+        'CONSTRAINT_VIOLATION' => 2002, // Referential, null, check, or related constraint failure
         // 3xxx — Validation
-        'INVALID_TABLE'        => 3000,
-        'INVALID_COLUMN'       => 3001,
-        'INVALID_OPERATOR'     => 3002,
-        'INVALID_JOIN_TYPE'    => 3003,
-        'INVALID_SORT'         => 3004,
-        'INVALID_ARGUMENT'     => 3005,
-        'EMPTY_WHERE_DELETE'   => 3006,
-        'INVALID_IDENTIFIER'   => 3007,
-        'INVALID_AGGREGATE'    => 3008,
-        'INVALID_QUERY_STATE'  => 3009,
-        'EMPTY_WHERE_UPDATE'   => 3010,
+        'INVALID_TABLE'        => 3000, // Invalid table reference
+        'INVALID_COLUMN'       => 3001, // Invalid column reference
+        'INVALID_OPERATOR'     => 3002, // Unsupported SQL comparison operator
+        'INVALID_JOIN_TYPE'    => 3003, // Unsupported SQL join type
+        'INVALID_SORT'         => 3004, // Invalid sort direction or expression
+        'INVALID_ARGUMENT'     => 3005, // Invalid public API argument
+        'EMPTY_WHERE_DELETE'   => 3006, // Unsafe delete without predicates
+        'INVALID_IDENTIFIER'   => 3007, // Identifier failed structural validation
+        'INVALID_AGGREGATE'    => 3008, // Unsupported SQL aggregate
+        'INVALID_QUERY_STATE'  => 3009, // Statement or transaction state violates the requested operation
+        'EMPTY_WHERE_UPDATE'   => 3010, // Unsafe update without predicates
     ];
 
     /* Instance Properties */
-    public readonly string $type;
-    public readonly string $msg;
-    public readonly mixed  $data;
-    private bool $_handled = false;
+    public readonly string $type;    // Stable symbolic error type
+    public readonly string $msg;     // Public application-facing error message
+    public readonly mixed $data;     // Optional structured error context
+    private bool $_handled = false;  // Whether a chainable handler has matched this error
 
     // CONSTRUCTOR :: STRING|INT, ?STRING, MIXED -> $this
     // Creates a new error — accepts type name or integer code
-    public function __construct(
-        string|int $type,
-        ?string    $msg = null,
-        mixed      $data = null
-    ) {
+    public function __construct(string|int $type, ?string $msg = null, mixed $data = null) {
         if (is_string($type)) {
             $this->type = $type;
             $code = self::TYPES[$type]
@@ -53,7 +49,7 @@ class CTGDBError extends \Exception {
                 ?? throw new \InvalidArgumentException("Unknown CTGDBError code: {$type}");
         }
 
-        $this->msg  = $msg ?? $this->type;
+        $this->msg = $msg ?? $this->type;
         $this->data = $data;
         parent::__construct($this->msg, $code);
     }

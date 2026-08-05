@@ -67,12 +67,14 @@ return [
                     []
                 ),
                 'raw_pdo_callable' => is_callable([$connection, 'getPDO']),
+                'raw_statement_callable' => is_callable([$connection, 'getStatement']) || is_callable([$connection, 'statement']),
             ];
         })
         ->assert('executes a typed prepared statement', fn(CTGTestState $s) => $s->getSubject()['rows'][0]['make'], CTGTestPredicates::equals('Ibanez'))
         ->assert('binds an explicitly typed null', fn(CTGTestState $s) => (int)$s->getSubject()['typed_null'][0]['is_null'], CTGTestPredicates::equals(1))
         ->assert('processes rows incrementally', fn(CTGTestState $s) => $s->getSubject()['processed'][0], CTGTestPredicates::equals('Ibanez'))
-        ->assert('raw PDO accessor is not callable', fn(CTGTestState $s) => $s->getSubject()['raw_pdo_callable'], CTGTestPredicates::isFalse()),
+        ->assert('raw PDO accessor is not callable', fn(CTGTestState $s) => $s->getSubject()['raw_pdo_callable'], CTGTestPredicates::isFalse())
+        ->assert('statement accessor is not callable', fn(CTGTestState $s) => $s->getSubject()['raw_statement_callable'], CTGTestPredicates::isFalse()),
 
     CTGTest::init('connection — processor failure closes cursor and preserves connection')
         ->stage('exercise', function(CTGTestState $s) use ($connectionConfig) {
@@ -188,7 +190,7 @@ return [
                 'valid' => !$connection->isInvalidated(),
             ];
         })
-        ->assert('starts outside transaction', fn(CTGTestState $s) => $s->getSubject()['before'], CTGTestPredicates::isFalse())
+        ->assert('starts outside a transaction', fn(CTGTestState $s) => $s->getSubject()['before'], CTGTestPredicates::isFalse())
         ->assert('reports active transaction', fn(CTGTestState $s) => $s->getSubject()['during'], CTGTestPredicates::isTrue())
         ->assert('rollback ends transaction', fn(CTGTestState $s) => $s->getSubject()['after'], CTGTestPredicates::isFalse())
         ->assert('connection remains valid', fn(CTGTestState $s) => $s->getSubject()['valid'], CTGTestPredicates::isTrue()),
@@ -230,17 +232,97 @@ return [
         ->assert('original transaction remains active', fn(CTGTestState $s) => $s->getSubject()['active'], CTGTestPredicates::isTrue())
         ->assert('connection remains valid', fn(CTGTestState $s) => $s->getSubject()['valid'], CTGTestPredicates::isTrue()),
 
+    CTGTest::init('connection — low-level transaction primitives are explicit')
+        ->stage('inspect', fn(CTGTestState $s) => CTGDBConn::init($connectionConfig()))
+        ->assert('beginTransaction is callable', fn(CTGTestState $s) => is_callable([$s->getSubject(), 'beginTransaction']), CTGTestPredicates::isTrue())
+        ->assert('commit is callable', fn(CTGTestState $s) => is_callable([$s->getSubject(), 'commit']), CTGTestPredicates::isTrue())
+        ->assert('rollBack is callable', fn(CTGTestState $s) => is_callable([$s->getSubject(), 'rollBack']), CTGTestPredicates::isTrue())
+        ->assert('inTransaction is callable', fn(CTGTestState $s) => is_callable([$s->getSubject(), 'inTransaction']), CTGTestPredicates::isTrue()),
+
     CTGTest::init('connection — commit without transaction is rejected')
-        ->stage('connect', fn(CTGTestState $s) => CTGDBConn::init($connectionConfig()))
-        ->stage('attempt', function(CTGTestState $s) {
+        ->stage('attempt', function(CTGTestState $s) use ($connectionConfig) {
+            $connection = CTGDBConn::init($connectionConfig());
             try {
-                $s->getSubject()->commit();
-                return 'no exception';
+                $connection->commit();
+                return ['type' => 'no exception', 'valid' => true];
             } catch (CTGDBError $error) {
-                return $error->type;
+                return ['type' => $error->type, 'valid' => !$connection->isInvalidated()];
             }
         })
-        ->assert('throws INVALID_QUERY_STATE', fn(CTGTestState $s) => $s->getSubject(), CTGTestPredicates::equals('INVALID_QUERY_STATE')),
+        ->assert('throws INVALID_QUERY_STATE', fn(CTGTestState $s) => $s->getSubject()['type'], CTGTestPredicates::equals('INVALID_QUERY_STATE'))
+        ->assert('connection remains valid', fn(CTGTestState $s) => $s->getSubject()['valid'], CTGTestPredicates::isTrue()),
+
+    CTGTest::init('connection — rollback without transaction is rejected')
+        ->stage('attempt', function(CTGTestState $s) use ($connectionConfig) {
+            $connection = CTGDBConn::init($connectionConfig());
+            try {
+                $connection->rollBack();
+                return ['type' => 'no exception', 'valid' => true];
+            } catch (CTGDBError $error) {
+                return ['type' => $error->type, 'valid' => !$connection->isInvalidated()];
+            }
+        })
+        ->assert('throws INVALID_QUERY_STATE', fn(CTGTestState $s) => $s->getSubject()['type'], CTGTestPredicates::equals('INVALID_QUERY_STATE'))
+        ->assert('connection remains valid', fn(CTGTestState $s) => $s->getSubject()['valid'], CTGTestPredicates::isTrue()),
+
+    CTGTest::init('connection — begin failure invalidates connection')
+        ->stage('exercise', function(CTGTestState $s) use ($connectionConfig) {
+            $connection = CTGDBConn::init($connectionConfig());
+            $killer = CTGDBConn::init($connectionConfig());
+            $connectionId = (int)$connection->query('SELECT CONNECTION_ID() AS id')[0]['id'];
+            $killer->execute("KILL CONNECTION {$connectionId}");
+            try {
+                $connection->beginTransaction();
+                return ['type' => 'no exception', 'invalidated' => false];
+            } catch (CTGDBError $error) {
+                return [
+                    'type' => $error->type,
+                    'invalidated' => $connection->isInvalidated(),
+                ];
+            }
+        })
+        ->assert('throws database failure', fn(CTGTestState $s) => in_array($s->getSubject()['type'], ['QUERY_FAILED', 'CONNECTION_FAILED'], true), CTGTestPredicates::isTrue())
+        ->assert('connection is invalidated', fn(CTGTestState $s) => $s->getSubject()['invalidated'], CTGTestPredicates::isTrue()),
+
+    CTGTest::init('connection — commit failure invalidates connection')
+        ->stage('exercise', function(CTGTestState $s) use ($connectionConfig) {
+            $connection = CTGDBConn::init($connectionConfig());
+            $killer = CTGDBConn::init($connectionConfig());
+            $connection->beginTransaction();
+            $connectionId = (int)$connection->query('SELECT CONNECTION_ID() AS id')[0]['id'];
+            $killer->execute("KILL CONNECTION {$connectionId}");
+            try {
+                $connection->commit();
+                return ['type' => 'no exception', 'invalidated' => false];
+            } catch (CTGDBError $error) {
+                return [
+                    'type' => $error->type,
+                    'invalidated' => $connection->isInvalidated(),
+                ];
+            }
+        })
+        ->assert('throws database failure', fn(CTGTestState $s) => in_array($s->getSubject()['type'], ['QUERY_FAILED', 'CONNECTION_FAILED'], true), CTGTestPredicates::isTrue())
+        ->assert('connection is invalidated', fn(CTGTestState $s) => $s->getSubject()['invalidated'], CTGTestPredicates::isTrue()),
+
+    CTGTest::init('connection — rollback failure invalidates connection')
+        ->stage('exercise', function(CTGTestState $s) use ($connectionConfig) {
+            $connection = CTGDBConn::init($connectionConfig());
+            $killer = CTGDBConn::init($connectionConfig());
+            $connection->beginTransaction();
+            $connectionId = (int)$connection->query('SELECT CONNECTION_ID() AS id')[0]['id'];
+            $killer->execute("KILL CONNECTION {$connectionId}");
+            try {
+                $connection->rollBack();
+                return ['type' => 'no exception', 'invalidated' => false];
+            } catch (CTGDBError $error) {
+                return [
+                    'type' => $error->type,
+                    'invalidated' => $connection->isInvalidated(),
+                ];
+            }
+        })
+        ->assert('throws database failure', fn(CTGTestState $s) => in_array($s->getSubject()['type'], ['QUERY_FAILED', 'CONNECTION_FAILED'], true), CTGTestPredicates::isTrue())
+        ->assert('connection is invalidated', fn(CTGTestState $s) => $s->getSubject()['invalidated'], CTGTestPredicates::isTrue()),
 
     // ── Invalidation ────────────────────────────────────────────────
 
@@ -251,7 +333,7 @@ return [
             $connection->invalidate();
             $connection->invalidate();
             try {
-                $connection->inTransaction();
+                $connection->query('SELECT 1');
                 $type = 'no exception';
             } catch (CTGDBError $error) {
                 $type = $error->type;

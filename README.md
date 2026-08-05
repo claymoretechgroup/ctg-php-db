@@ -2,9 +2,10 @@
 
 `ctg-php-db` is a minimal PHP database library built on PDO. `CTGDB` provides
 safe CRUD methods, materialized execution through `run()`, and incremental row
-handling through `process()`, while `CTGDBConn` owns connection lifecycle and
-transaction state. `CTGDBQuery` is
-the default read path — a structured query builder where every column,
+handling through `process()`. `CTGDBConn` owns connection lifecycle and exposes
+the low-level transaction primitives used by application coordinators.
+`CTGDBQuery` is the default read path — a
+structured query builder where every column,
 operator, and value is validated and parameterized by construction. All
 values are bound through PDO prepared statements. All identifiers are
 validated before interpolation.
@@ -16,7 +17,7 @@ validated before interpolation.
   `process()` handles result rows incrementally
 * **Explicit connection lifecycle** — `CTGDBConn` owns PDO creation,
   statement execution, persistence state, and fail-closed invalidation without
-  exposing PDO; `CTGDB` exposes deliberate transaction boundaries
+  exposing PDO, including direct transaction boundary operations
 * **Process results** — callers control incremental output through a row
   processor and initial state
 * **Composable** — `CTGDBQuery` combines column selection, WHERE conditions,
@@ -30,7 +31,7 @@ validated before interpolation.
 * **SQL injection hardened** — values via PDO binding, identifiers via
   regex validation, keywords via hardcoded allowlists
 * **Composable connection layer** — `CTGDB` operates over an injectable
-  `CTGDBConn` instance instead of being a connection subtype
+  `CTGDBConn` instead of being a connection subtype
 
 ## Install
 
@@ -54,30 +55,41 @@ composer require ctg/php-db
 
 Version 1.1 introduced an explicit fail-closed lifecycle for security-sensitive
 transaction coordinators. Version 2.0 moves connection invalidation and
-persistence state into `CTGDBConn`. `CTGDB` exposes transaction operations, but
-callers that must invalidate a failed connection should retain the injected
-connection:
+persistence state into `CTGDBConn`. Transaction mechanics remain explicit on
+the connection so application-specific coordinators can apply their own policy:
 
 ```php
 $connection = CTGDBConn::init($config);
-$db = new CTGDB($connection);
-
-$db->beginTransaction();
-// ... perform database operations ...
-$db->commit();
-
 if ($connection->isPersistent()) {
     throw new RuntimeException('This operation requires a nonpersistent connection');
 }
 
-$connection->invalidate();
+$db = new CTGDB($connection);
+$connection->beginTransaction();
+
+try {
+    // ... perform database operations through $db ...
+} catch (Throwable $error) {
+    try {
+        if ($connection->inTransaction()) {
+            $connection->rollBack();
+        }
+    } catch (Throwable $rollbackError) {
+        $connection->invalidate();
+    }
+    throw $error;
+}
+
+$connection->commit();
 ```
 
 `invalidate()` releases the wrapper's PDO handle and permanently poisons the
 composed connection; all later queries fail with `CONNECTION_FAILED`. Call it when
 rollback cannot be confirmed or commit acknowledgement is indeterminate.
 Reject persistent connections before starting transactions that require
-physical connection disposal.
+physical connection disposal. Higher-level requirements such as isolation
+verification, audit context, and rollback-or-throw behavior belong to the
+application transaction coordinator.
 
 ## Examples
 

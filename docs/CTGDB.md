@@ -4,7 +4,8 @@ Main database API operating over a composed `CTGDBConn`, with safe CRUD
 methods, materialized execution through `run()`, custom non-row execution
 through `execute()`, and incremental row handling through `process()`.
 `CTGDBConn` owns PDO construction, guarded statement execution, connection
-state, transactions, and invalidation. All queries use PDO prepared statements.
+state, invalidation, and low-level transaction mechanics. All queries use PDO
+prepared statements.
 Identifiers are regex-validated. Keywords are allowlisted.
 Read queries should use `CTGDBQuery` (see [CTGDBQuery.md](CTGDBQuery.md))
 for safe-by-default, structured query building — it validates all
@@ -15,9 +16,8 @@ construction.
 
 ### CONSTRUCTOR :: ctgdbConn -> ctgdb
 
-Creates the main database API over an existing `CTGDBConn`. This makes
-connection ownership explicit and permits a connection to be constructed or
-managed separately without making `CTGDB` a connection subtype.
+Creates the main database API over an existing `CTGDBConn`. This keeps `CTGDB`
+stateless while all CRUD and query operations use the supplied connection.
 
 ```php
 $connection = CTGDBConn::init([
@@ -36,9 +36,9 @@ $db = new CTGDB($connection);
 
 Convenience factory that creates a validated `CTGDBConn` from the config and
 passes it to `new static(...)`. This is the concise path for callers that need
-the query, CRUD, and transaction APIs. Callers that need persistence inspection
-or fail-closed invalidation should construct and retain a `CTGDBConn`, then
-inject it through the constructor.
+ordinary query and CRUD APIs. Transactional callers construct and retain a
+`CTGDBConn` so their application coordinator can operate on the same connection
+used by `CTGDB`.
 
 ```php
 $db = CTGDB::init([
@@ -211,35 +211,37 @@ $result = $db->paginate($query, [
 // $result['pagination'] — {page, per_page, total_rows, total_pages, has_previous, has_next}
 ```
 
-### ctgdb.beginTransaction :: VOID -> VOID
+## Transactions
 
-Starts a transaction on this instance's connection.
-
-### ctgdb.commit :: VOID -> VOID
-
-Commits the active transaction. Throws `INVALID_QUERY_STATE` if none is active.
-
-### ctgdb.rollBack :: VOID -> VOID
-
-Rolls back the active transaction. Throws `INVALID_QUERY_STATE` if none is
-active.
-
-### ctgdb.inTransaction :: VOID -> BOOL
-
-Returns whether this instance's connection has an active transaction.
+`CTGDB` does not expose transaction lifecycle methods. Retain its supplied
+connection and perform transaction operations there; every `CTGDB` operation
+then participates in that connection's active transaction:
 
 ```php
-$db->beginTransaction();
+$connection = CTGDBConn::init($config);
+$db = new CTGDB($connection);
+$connection->beginTransaction();
+
 try {
     $db->execute($conditionalWrite, $values);
-    $db->commit();
 } catch (Throwable $error) {
-    if ($db->inTransaction()) {
-        $db->rollBack();
+    try {
+        if ($connection->inTransaction()) {
+            $connection->rollBack();
+        }
+    } catch (Throwable $rollbackError) {
+        $connection->invalidate();
     }
     throw $error;
 }
+
+$connection->commit();
 ```
+
+Application-specific coordinators remain responsible for isolation policy,
+commit context, rollback-or-throw behavior, and whether execution should be
+allowed after a transaction ends. `CTGDBConn` invalidates itself when a begin,
+commit, rollback, or state-check result cannot be trusted.
 
 ---
 
@@ -259,5 +261,6 @@ identifiers and `CTGDBQuery::buildWhere()` for equality-only write predicates.
 
 PDO access is deliberately absent from `CTGDB`. Preparation, binding,
 execution, and result consumption cross the narrow `CTGDBConn::query()`,
-`insert()`, `execute()`, and `process()` boundaries so a raw PDO handle or live
-statement cannot escape invalidation.
+`insert()`, `execute()`, and `process()` boundaries. `CTGDBConn` privately owns
+each live prepared-statement lifecycle, so neither PDO statements nor PDO
+handles can escape invalidation.

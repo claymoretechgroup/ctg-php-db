@@ -7,10 +7,10 @@ namespace CTG\DB;
 class CTGDB {
 
     /* Instance Properties */
-    private CTGDBConn $_connection; // Connection responsible for PDO access, transactions, and invalidation
+    private CTGDBConn $_connection; // Connection used for every database operation
 
     // CONSTRUCTOR :: ctgdbConn -> $this
-    // Creates the main database API over an existing connection instance
+    // Creates the main database API over an existing connection
     public function __construct(CTGDBConn $connection) {
         $this->_connection = $connection;
     }
@@ -134,30 +134,6 @@ class CTGDB {
             'data' => $data,
             'pagination' => $this->calcPaginationInfo($page, $perPage, $total),
         ];
-    }
-
-    // :: VOID -> VOID
-    // Starts a transaction for subsequent operations on this database instance
-    public function beginTransaction(): void {
-        $this->_connection->beginTransaction();
-    }
-
-    // :: VOID -> VOID
-    // Commits the active transaction
-    public function commit(): void {
-        $this->_connection->commit();
-    }
-
-    // :: VOID -> VOID
-    // Rolls back the active transaction
-    public function rollBack(): void {
-        $this->_connection->rollBack();
-    }
-
-    // :: VOID -> BOOL
-    // Returns whether this database instance has an active transaction
-    public function inTransaction(): bool {
-        return $this->_connection->inTransaction();
     }
 
     /**

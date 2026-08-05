@@ -2,13 +2,13 @@
 
 Dedicated PDO connection lifecycle manager. `CTGDBConn` creates and owns one
 PDO handle, provides guarded prepared-statement execution, reports connection
-state, manages transaction boundaries, and permanently invalidates connections
-whose state can no longer be trusted.
+and transaction state, and permanently invalidates connections whose state can
+no longer be trusted.
 
 It does not build SQL or provide CRUD/query-builder semantics. Those
-responsibilities remain with `CTGDB` and `CTGDBQuery`. It does bind supplied
-values and consume statement results because keeping those operations inside
-the connection boundary prevents PDO handles and live statements from escaping.
+responsibilities remain with `CTGDB` and `CTGDBQuery`. Preparation, binding,
+result access, and cursor cleanup remain private connection details so PDO
+handles and live statements never leave the connection boundary.
 
 ### Properties
 
@@ -128,7 +128,9 @@ $id = $connection->insert(
 Connection loss during preparation, execution, fetching, row-count lookup, or
 insert-ID lookup permanently invalidates the connection. Constraint and
 duplicate-entry errors retain the public `CTGDBError` classifications. Every
-statement cursor is closed after its result has been consumed.
+statement cursor is closed after its result has been consumed. These mechanics
+remain private to `CTGDBConn`; callers receive only arrays, counts, insert
+identifiers, or processor state.
 
 ### ctgdbConn.process :: STRING, (ARRAY, MIXED -> MIXED), MIXED, ARRAY -> MIXED
 
@@ -154,29 +156,29 @@ $count = $connection->process(
 
 ### ctgdbConn.beginTransaction :: VOID -> VOID
 
-Starts a transaction. Nested transactions are rejected with
-`INVALID_QUERY_STATE` without poisoning the valid, active transaction.
+Starts a transaction on the connection. A nested begin is rejected with
+`INVALID_QUERY_STATE` without poisoning the existing transaction. An
+indeterminate begin invalidates the connection because the server-side state
+cannot be trusted.
 
 ### ctgdbConn.commit :: VOID -> VOID
 
-Commits the active transaction. Calling it without an active transaction is
-rejected with `INVALID_QUERY_STATE`.
-
-If the commit result cannot be confirmed, the connection is invalidated and a
-`QUERY_FAILED` error is thrown with `connection_invalidated => true`.
+Commits the active connection transaction. Calling it without an active
+transaction is rejected with `INVALID_QUERY_STATE`.
 
 ### ctgdbConn.rollBack :: VOID -> VOID
 
-Rolls back the active transaction. Calling it without an active transaction is
-rejected with `INVALID_QUERY_STATE`.
-
-If the rollback result cannot be confirmed, the connection is invalidated and
-a `QUERY_FAILED` error is thrown with `connection_invalidated => true`.
+Rolls back the active connection transaction. Calling it without an active
+transaction is rejected with `INVALID_QUERY_STATE`.
 
 ### ctgdbConn.inTransaction :: VOID -> BOOL
 
-Returns whether PDO reports an active transaction. A failure to determine
-transaction state invalidates the connection and throws `CONNECTION_FAILED`.
+Reports whether PDO currently considers the connection transactional.
+
+These are deliberately low-level connection primitives. `CTGDB` does not
+forward them. Application-specific transaction coordinators retain the same
+`CTGDBConn` supplied to `CTGDB` and own higher-level policy such as isolation
+requirements, audit context, retry behavior, and rollback-or-throw semantics.
 
 ---
 
@@ -206,12 +208,13 @@ Reports whether persistent PDO pooling was requested at construction.
 
 There is no public or protected PDO accessor. `CTGDBConn::query()`,
 `execute()`, `insert()`, and `process()` are narrow driver boundaries that
-never return a raw PDO handle or live `PDOStatement`. This prevents callers and
-subclasses from retaining a driver object that could continue operating after
-the wrapper is invalidated.
+never return a raw PDO handle or live `PDOStatement`. Private statement helpers
+check the owning connection before incremental result access and map PDO
+failures back through that connection. This prevents callers and subclasses
+from retaining a driver object that could continue operating after
+invalidation.
 
 `CTGDB` composes a `CTGDBConn` and uses `query()` for `run()`, `insert()` for
-`create()`, and `execute()` for custom commands, `update()`, and `delete()`. It
-exposes the connection's transaction operations, but not persistence state or
-invalidation. Callers needing fail-closed invalidation control retain the
-connection they inject into `CTGDB`.
+`create()`, and `execute()` for custom commands, `update()`, and `delete()`.
+Neither object unwraps or exposes PDO. Callers needing transaction or
+fail-closed invalidation control retain the original connection.
