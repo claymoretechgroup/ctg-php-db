@@ -3,8 +3,8 @@
 ## Overview
 
 A minimal, opinionated PHP database library built on PDO. `CTGDB`
-provides safe CRUD methods, materialized execution with `run()`, and
-incremental result handling with `process()`
+provides safe CRUD methods, materialized execution with `run()`, custom
+non-row execution with `execute()`, and incremental result handling with `process()`
 (`create`, `read`, `update`, `delete`) built on top. `CTGDBConn`
 separates PDO access, guarded execution, connection lifecycle, and transaction
 state from query construction and CRUD semantics. Filtering and pagination are
@@ -23,8 +23,9 @@ Queries that `CTGDBQuery` cannot express use `run()` directly.
 
 ## Design Principles
 
-1. **Explicit execution modes** — `run()` materializes complete results while
-   `process()` handles rows incrementally
+1. **Explicit execution modes** — `run()` materializes complete results,
+   `execute()` returns affected-row counts for non-row commands, and `process()`
+   handles rows incrementally
 2. **Structured reads** — `CTGDBQuery` represents validated application reads,
    while raw SQL remains an explicit escape hatch
 3. **Process results** — callers control incremental output through a row
@@ -61,6 +62,10 @@ class CTGDB
     // Execute a row-producing query and return all rows as a materialized array
     public function run(string|CTGDBQuery $query, array $values = []): array;
 
+    // :: STRING, ARRAY -> INT
+    // Execute a custom non-row statement and return its affected-row count
+    public function execute(string $sql, array $values = []): int;
+
     // :: STRING|ctgdbQuery, (ARRAY, MIXED -> MIXED), MIXED, ARRAY -> MIXED
     // Process row-producing query results one row at a time and return final state
     public function process(string|CTGDBQuery $query, callable $processor, mixed $initial = null, array $values = []): mixed;
@@ -71,10 +76,9 @@ class CTGDB
     // Insert a single row, returns last insert ID
     public function create(string $table, array $data): int|string;
 
-    // :: STRING|ARRAY|ctgdbQuery, ARRAY -> ARRAY
-    // Build or accept a CTGDBQuery and return materialized rows
-    // When $tables is a CTGDBQuery, $config is ignored
-    public function read(string|array|CTGDBQuery $tables, array $config = []): array;
+    // :: ctgdbQuery -> ARRAY
+    // Execute a structured SELECT query and return materialized rows
+    public function read(CTGDBQuery $query): array;
 
     // :: STRING, ARRAY, ARRAY -> INT
     // Update rows matching WHERE conditions, returns affected count
@@ -86,10 +90,16 @@ class CTGDB
 
     // ─── Pagination ────────────────────────────────────────
 
-    // :: STRING|ctgdbQuery, ARRAY -> ARRAY
+    // :: ctgdbQuery, ARRAY -> ARRAY
     // Paginate any result set with metadata
-    // CTGDBQuery is the preferred source type
-    public function paginate(string|CTGDBQuery $source, array $config = []): array;
+    public function paginate(CTGDBQuery $source, array $config = []): array;
+
+    // ─── Transactions ─────────────────────────────────────
+
+    public function beginTransaction(): void;
+    public function commit(): void;
+    public function rollBack(): void;
+    public function inTransaction(): bool;
 
     public static function init(array $config): static;
 }
@@ -114,10 +124,10 @@ $db = CTGDB::init([
 
 `CTGDB::init()` creates a `CTGDBConn` and passes it to `new static(...)`.
 Applications may instead inject an existing connection with
-`new CTGDB($connection)`. `CTGDB` intentionally does not forward transaction,
-persistence-state, or invalidation methods. Callers needing those operations
-retain the injected connection and invoke its lifecycle API directly. See
-`docs/CTGDBConn.md` for the complete connection contract.
+`new CTGDB($connection)`. `CTGDB` exposes transaction operations, but keeps
+persistence state and invalidation on `CTGDBConn`. Callers needing those
+lifecycle operations retain the injected connection. See `docs/CTGDBConn.md`
+for the complete connection contract.
 
 ---
 
@@ -212,7 +222,33 @@ query object owns its SQL and bound values.
 - SELECT and other row-producing statements return a materialized row array.
 - A statement with no returned rows returns `[]`.
 - Non-row statements are rejected with `INVALID_QUERY_STATE`; writes use the
-  dedicated CRUD methods.
+  dedicated CRUD methods or `execute()`.
+
+---
+
+## execute() — Custom Non-Row Execution
+
+### Signature
+
+```php
+// :: STRING, ARRAY -> INT
+// Execute a custom non-row statement and return its affected-row count
+public function execute(string $sql, array $values = []): int;
+```
+
+Use `execute()` for conditional writes, upserts, DDL, and session commands that
+the standard CRUD methods do not represent. Row-producing statements are
+rejected with `INVALID_QUERY_STATE`.
+
+```php
+$affected = $db->execute(
+    'UPDATE access_tokens SET used_at = ? WHERE id = ? AND used_at IS NULL',
+    [$usedAt, $tokenId]
+);
+```
+
+The SQL structure is trusted application code. User-controlled values must be
+supplied separately for PDO binding and must never be concatenated into SQL.
 
 ---
 
@@ -230,8 +266,8 @@ For each row, `$processor` receives the current associative row and state. Its
 return value becomes the state passed to the next row. The final state is
 returned when all rows have been consumed. Statement cursors are closed after
 processing, including when the processor throws. `process()` is intended for
-SELECT and other row-producing statements; use CRUD methods for statements
-that do not return rows.
+SELECT and other row-producing statements; use CRUD methods or `execute()` for
+statements that do not return rows.
 
 ```
 $processor signature: fn(array $record, mixed $result): mixed
@@ -270,7 +306,7 @@ enabled for the connection.
 ## CRUD Methods
 
 All CRUD methods build SQL and bound-value arrays internally and delegate to
-`run()`.
+typed `CTGDBConn` execution boundaries.
 
 ### create()
 
@@ -302,20 +338,18 @@ $id = $db->create('guitars', [
 ### read()
 
 ```php
-// :: STRING|ARRAY|ctgdbQuery, ARRAY -> ARRAY
-// Read rows from one or more tables
-public function read(string|array|CTGDBQuery $tables, array $config = []): array;
+// :: ctgdbQuery -> ARRAY
+// Execute a structured SELECT query
+public function read(CTGDBQuery $query): array;
 ```
 
-The general-purpose read method. A supplied `CTGDBQuery` executes directly.
-String and array table forms are translated into `CTGDBQuery` method calls, so
-all SELECT syntax comes from one builder.
+The general-purpose structured read method. `CTGDBQuery` owns all SELECT syntax
+and executes directly through the row-only query boundary.
 
-### CTGDBQuery — Preferred Usage
+### CTGDBQuery Usage
 
-`CTGDBQuery` is the preferred way to use `read()`. When `$tables` is a
-`CTGDBQuery` instance, `$config` is ignored — the query object contains
-all configuration (columns, WHERE, JOINs, ORDER BY, LIMIT).
+The query object contains all configuration: columns, WHERE, JOINs, ORDER BY,
+GROUP BY, LIMIT, and OFFSET.
 
 ```php
 // Simple read
@@ -346,110 +380,6 @@ $byMake = $db->process(
 methods that delegate to the canonical `join()` implementation. A generic
 `outerJoin()` is intentionally omitted because its direction would be
 ambiguous and MariaDB does not directly support `FULL OUTER JOIN`.
-
-### Compatibility Usage
-
-The table/config forms remain available, but they do not construct SQL inside
-`CTGDB`. `read()` converts them into a `CTGDBQuery` before execution.
-
-**When `$tables` is a string** — single table, simple query:
-
-```php
-$guitars = $db->read('guitars');
-
-$fenders = $db->read('guitars', [
-    'columns' => ['id', 'model', 'color'],
-    'where' => [
-        'make' => ['type' => 'str', 'value' => 'Fender']
-    ],
-    'order' => 'year_purchased DESC',
-    'limit' => 10
-]);
-```
-
-**When `$tables` is an array** — multi-table join:
-
-```php
-// Two tables, inner join
-$db->read(['guitars', 'pickups'], [
-    'join' => 'inner',
-    'on' => [
-        ['guitars.id' => 'pickups.guitar_id']
-    ],
-    'columns' => ['guitars.make', 'guitars.model', 'pickups.position', 'pickups.type']
-]);
-
-// Three+ tables with mixed join types (array form)
-$db->read(['articles', 'categories', 'users'], [
-    'join' => [
-        ['type' => 'left',  'on' => ['articles.category_id' => 'categories.id']],
-        ['type' => 'inner', 'on' => ['articles.author_id' => 'users.id']],
-    ],
-    'columns' => ['articles.title', 'categories.name as category', 'users.name as author']
-]);
-```
-
-**Config options (single table):**
-
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `columns` | `array` | `['*']` | Columns to select |
-| `where` | `array` | `[]` | WHERE conditions (associative array only). String form removed — use `CTGDBQuery` |
-| `values` | — | — | Removed (was used with string `where`) |
-| `order` | `string` | `null` | ORDER BY clause |
-| `limit` | `int` | `null` | Max rows to return |
-
-**Additional config options (multi-table):**
-
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `join` | `string\|array` | *required* | Join type(s) |
-| `on` | `array` | *required* | Join conditions |
-| `where_raw` | — | — | Removed — use `CTGDBQuery` |
-| `group` | `string` | `null` | GROUP BY clause |
-| `having` | — | — | Removed — use `CTGDBQuery` |
-| `as_query` | — | — | Removed — use `CTGDBQuery` directly |
-
-**Join type formats:**
-
-```php
-// String — same join type for all tables
-'join' => 'left'
-'join' => 'inner'
-
-// Array — per-table join type and conditions
-'join' => [
-    ['type' => 'left',  'on' => ['a.col' => 'b.col']],
-    ['type' => 'inner', 'on' => ['a.col' => 'c.col']],
-]
-```
-
-**On condition formats:**
-
-When `join` is a string (uniform type), `on` is a separate array
-where each entry corresponds to each joined table:
-
-```php
-// Entry [0] joins table[1] to table[0]
-// Entry [1] joins table[2] to the result set
-'on' => [
-    ['guitars.id' => 'pickups.guitar_id'],
-]
-```
-
-When `join` is an array (mixed types), each entry contains its own
-`on` — see mixed join example above.
-
-Each `on` entry supports multiple conditions for composite keys:
-
-```php
-['type' => 'inner', 'on' => [
-    'orders.user_id' => 'users.id',
-    'orders.tenant_id' => 'users.tenant_id'
-]]
-// Generates: INNER JOIN users ON orders.user_id = users.id
-//            AND orders.tenant_id = users.tenant_id
-```
 
 **Join + paginate via CTGDBQuery:**
 
@@ -518,17 +448,16 @@ $affected = $db->delete('pickups', [
 ### Signature
 
 ```php
-// :: STRING|ctgdbQuery, ARRAY -> ARRAY
+// :: ctgdbQuery, ARRAY -> ARRAY
 // Paginate any result set with metadata
-public function paginate(string|CTGDBQuery $source, array $config = []): array;
+public function paginate(CTGDBQuery $source, array $config = []): array;
 ```
 
-### Source Types
+### Source
 
-`$source` accepts two forms:
+`$source` is a structured query:
 
 ```php
-// 1. CTGDBQuery — the default, safe path
 $query = CTGDBQuery::from('guitars')
     ->innerJoin('pickups', ['guitars.id' => 'pickups.guitar_id'])
     ->columns('guitars.model', 'pickups.type as pickup_type')
@@ -539,24 +468,15 @@ $result = $db->paginate($query, [
     'page' => 1,
     'per_page' => 10
 ]);
-
-// 2. Table name — paginate all rows from a single table
-$result = $db->paginate('guitars', [
-    'sort' => 'year_purchased',
-    'order' => 'DESC',
-    'page' => 1
-]);
 ```
 
-Array sources (filter results, raw query arrays, `as_query` output) are
-no longer accepted. Use `CTGDBQuery` for filtered/joined pagination, or
-`run()` directly for queries that `CTGDBQuery` cannot express.
+String table names, arrays, raw query arrays, and prior `as_query` output are
+not accepted. Construct a `CTGDBQuery` explicitly.
 
 ### Config Options
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `columns` | `array` | `['*']` | Columns to select (table/filter sources only) |
 | `sort` | `string` | `null` | Column to sort by |
 | `order` | `string` | `'ASC'` | Sort direction: `'ASC'` or `'DESC'` |
 | `page` | `int` | `1` | Current page (1-based) |
@@ -565,7 +485,7 @@ no longer accepted. Use `CTGDBQuery` for filtered/joined pagination, or
 
 ### Return Structure
 
-Always the same shape regardless of source type:
+Always returns this shape:
 
 ```php
 [
@@ -589,8 +509,9 @@ be applied explicitly after pagination when needed.
 
 ### Internal Behavior
 
-For **table name** and **filter** sources, paginate builds the SQL
-directly:
+`CTGDBQuery::toCountStatement()` builds a count statement from the same JOIN,
+WHERE, and GROUP BY structure. The cloned query receives the requested page,
+page size, and optional replacement sort before producing the data statement:
 
 ```sql
 -- Count
@@ -601,31 +522,34 @@ SELECT * FROM guitars WHERE make = ?
 ORDER BY model ASC LIMIT 5 OFFSET 0
 ```
 
-For **raw query** and **join query** sources, paginate wraps in a
-subquery:
-
-```sql
--- Count
-SELECT COUNT(*) as total FROM (
-    SELECT g.model, p.make as pickup_make
-    FROM guitars g
-    INNER JOIN pickups p ON g.id = p.guitar_id
-    WHERE g.year_purchased > ?
-) as _paginated
-
--- Data
-SELECT * FROM (
-    SELECT g.model, p.make as pickup_make
-    FROM guitars g
-    INNER JOIN pickups p ON g.id = p.guitar_id
-    WHERE g.year_purchased > ?
-) as _paginated
-ORDER BY model ASC LIMIT 20 OFFSET 0
-```
-
 The `total` config option lets callers skip the count query when they
 already know the total. This is the primary extension point for
 performance optimization in subclasses.
+
+---
+
+## Transaction Boundaries
+
+`CTGDB` exposes transaction control over its composed connection:
+
+```php
+$db->beginTransaction();
+try {
+    $db->execute($conditionalWrite, $values);
+    $db->commit();
+} catch (Throwable $error) {
+    if ($db->inTransaction()) {
+        $db->rollBack();
+    }
+    throw $error;
+}
+```
+
+Nested transactions and commit/rollback without an active transaction are
+rejected with `INVALID_QUERY_STATE`. Indeterminate commit or rollback outcomes
+invalidate the underlying `CTGDBConn`. Callers that must inspect invalidation
+or explicitly poison a connection retain the connection they inject into
+`CTGDB`.
 
 ---
 
@@ -635,20 +559,9 @@ Use `CTGDBQuery::from()->where()` for all read query WHERE conditions.
 `CTGDBQuery` supports the full operator set (`=`, `>`, `<`, `>=`, `<=`,
 `!=`, `LIKE`, `NOT LIKE`, `IN`, `NOT IN`, `IS`, `IS NOT`, `BETWEEN`).
 
-The `where` config in `read()` accepts only the associative array form
-for backward compatibility with `update()` and `delete()`:
-
-```php
-'where' => [
-    'make' => ['type' => 'str', 'value' => 'Fender'],
-    'year_purchased' => ['type' => 'int', 'value' => 2019]
-]
-// Generates: WHERE make = ? AND year_purchased = ?
-```
-
-String `where`, `where_raw`, and raw `having` are **removed** — passing
-a string to `where` throws `INVALID_ARGUMENT`. Use `CTGDBQuery` for all
-read queries, or `run()` for anything `CTGDBQuery` cannot express.
+`update()` and `delete()` continue to accept equality-only associative WHERE
+arrays, which `CTGDBQuery::buildWhere()` converts into bound predicates. Use
+`run()` for row-producing statements that `CTGDBQuery` cannot express.
 
 ---
 
@@ -694,12 +607,13 @@ Join types, sort directions, and filter operators are validated by private
 | Method | What's validated |
 |--------|-----------------|
 | `create()` | Table name, column names (from data keys) |
-| `read()` | Translates compatibility config into `CTGDBQuery`; validation occurs in the builder |
+| `read()` | Accepts only `CTGDBQuery`; validation occurs in the builder |
 | `update()` | Table name, column names (data keys + where keys) |
 | `delete()` | Table name, column names (where keys) |
-| `paginate()` | Builds or clones `CTGDBQuery`; sort validation occurs in the builder |
+| `paginate()` | Clones `CTGDBQuery`; sort validation occurs in the builder |
 | `CTGDBQuery` | Table name, column names, join types, operators, sort direction — **all validated by construction** |
 | `run()` | **No identifier validation** — raw SQL is the caller's responsibility |
+| `execute()` | **No identifier validation** — raw SQL is the caller's responsibility; supplied values are bound |
 
 `CTGDBQuery` provides safe-by-default query building: every identifier
 is validated, every operator is allowlisted, and every value is
@@ -811,8 +725,9 @@ driver versions and server locales.
 Connection and query failures are classified inside `CTGDBConn`, the only
 class with PDO access. `CTGDB::run()` resolves raw SQL or `CTGDBQuery` and
 delegates materialized row execution to `CTGDBConn::query()`.
-`CTGDB::create()` delegates inserts to `CTGDBConn::insert()`, while update and
-delete delegate affected-row execution to `CTGDBConn::execute()`.
+`CTGDB::create()` delegates inserts to `CTGDBConn::insert()`, while custom
+execution, update, and delete delegate affected-row execution to
+`CTGDBConn::execute()`.
 `CTGDB::process()` delegates incremental result handling to
 `CTGDBConn::process()`. These paths map duplicate and constraint failures and
 permanently invalidate the connection when driver codes 2006 or 2013 show that
@@ -912,7 +827,9 @@ ctg-php-db/
 4. **CTGDBQuery** — the sole SELECT builder and canonical identifier validator
 5. **Connection binding** — private value/type resolution inside `CTGDBConn`
 6. **run()** — materialized row execution with an array-only return contract
-7. **process()** — incremental row handling
-8. **CRUD** — create, read, update, delete (delegates to typed connection operations)
-9. **paginate()** — paging with metadata
-10. **Integration** — `run()`, `process()`, `read()`, and `paginate()` accept `CTGDBQuery` instances where applicable
+7. **execute()** — affected-row execution for custom non-row statements
+8. **process()** — incremental row handling
+9. **CRUD** — create, read, update, delete (delegates to typed connection operations)
+10. **paginate()** — paging with metadata
+11. **Transactions** — explicit main-API boundaries over the composed connection
+12. **Integration** — `run()`, `process()`, `read()`, and `paginate()` accept `CTGDBQuery` instances where applicable

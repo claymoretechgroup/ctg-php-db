@@ -1,8 +1,8 @@
 # CTGDB
 
 Main database API operating over a composed `CTGDBConn`, with safe CRUD
-methods, materialized execution through `run()`, and incremental row handling
-through `process()`.
+methods, materialized execution through `run()`, custom non-row execution
+through `execute()`, and incremental row handling through `process()`.
 `CTGDBConn` owns PDO construction, guarded statement execution, connection
 state, transactions, and invalidation. All queries use PDO prepared statements.
 Identifiers are regex-validated. Keywords are allowlisted.
@@ -35,10 +35,10 @@ $db = new CTGDB($connection);
 ### CTGDB.init :: ["host" => STRING, "database" => STRING, "username" => STRING, "password" => STRING, "charset"? => STRING, "timeout"? => ?INT, "persistent"? => BOOL] -> ctgdb
 
 Convenience factory that creates a validated `CTGDBConn` from the config and
-passes it to `new static(...)`. This is the concise path for callers that only
-need the query and CRUD API. Callers that need transaction or lifecycle control
-should construct and retain a `CTGDBConn`, then inject it through the
-constructor.
+passes it to `new static(...)`. This is the concise path for callers that need
+the query, CRUD, and transaction APIs. Callers that need persistence inspection
+or fail-closed invalidation should construct and retain a `CTGDBConn`, then
+inject it through the constructor.
 
 ```php
 $db = CTGDB::init([
@@ -74,6 +74,24 @@ $admins = $db->run(
 );
 ```
 
+### ctgdb.execute :: STRING, ARRAY -> INT
+
+Executes a custom non-row SQL statement with optional bound values and returns
+its affected-row count. Use this for conditional writes, upserts, DDL, and
+session commands that are not represented by the standard CRUD methods.
+Row-producing statements are rejected with `INVALID_QUERY_STATE`.
+
+```php
+$affected = $db->execute(
+    'UPDATE access_tokens SET used_at = ? WHERE id = ? AND used_at IS NULL',
+    [$usedAt, $tokenId]
+);
+```
+
+The SQL structure is trusted application code and remains the caller's
+responsibility. Never concatenate user-controlled identifiers or values into
+it; pass values separately so PDO binds them.
+
 ### ctgdb.process :: STRING|ctgdbQuery, (ARRAY, MIXED -> MIXED), MIXED, ARRAY -> MIXED
 
 Executes a row-producing raw SQL string or `CTGDBQuery`, passes each row and
@@ -81,8 +99,8 @@ the current state to the processor, and returns the final state. This avoids
 materializing rows inside `CTGDB`, although memory usage still depends on what
 the processor retains and on the connection's PDO buffering mode. Statement
 cursors are closed after processing, including when the processor throws.
-Use `create()`, `update()`, or `delete()` for statements that do not return
-rows.
+Use `create()`, `update()`, or `delete()` for standard writes and `execute()`
+for custom statements that do not return rows.
 
 ```php
 $emails = $db->process(
@@ -114,15 +132,11 @@ $id = $db->create('guitars', [
 ]);
 ```
 
-### ctgdb.read :: STRING|ARRAY|ctgdbQuery, ARRAY -> ARRAY
+### ctgdb.read :: ctgdbQuery -> ARRAY
 
-General-purpose read. The preferred usage is to pass a `CTGDBQuery`
-instance, which provides validated, parameterized query building with
-no raw SQL strings. String and array table forms are translated into a
-`CTGDBQuery` before execution, so this method does not maintain separate SELECT
-construction logic.
-
-**Preferred: CTGDBQuery**
+Executes a structured `CTGDBQuery` and returns its materialized rows. The query
+object provides validated, parameterized SELECT construction with no raw SQL
+strings.
 
 ```php
 $guitars = $db->read(CTGDBQuery::from('guitars'));
@@ -142,39 +156,9 @@ $db->read(
 );
 ```
 
-When `$tables` is a `CTGDBQuery`, `$config` is ignored — the query
-object contains all configuration. See [CTGDBQuery.md](CTGDBQuery.md)
-for full builder documentation.
-
-**Compatibility: string and array forms**
-
-When `tables` is a string, `read()` constructs a `CTGDBQuery` with optional
-`columns`, equality-only `where`, `order`, and `limit` configuration. When
-`tables` is an array, it constructs the same query object with `join` and `on`
-configuration. Identifier and keyword validation therefore use the same code
-as direct `CTGDBQuery` usage.
-
-The following config options are removed:
-- `where` (string form) — use `CTGDBQuery::from()->where()`
-- `where_raw` — use `CTGDBQuery::from()->where()`
-- `as_query` — the `CTGDBQuery` object is the query; no config flag needed
-
-```php
-$guitars = $db->read('guitars');
-
-$fenders = $db->read('guitars', [
-    'columns' => ['id', 'model', 'color'],
-    'where' => ['make' => ['type' => 'str', 'value' => 'Fender']],
-    'order' => 'year_purchased DESC',
-    'limit' => 10
-]);
-
-$db->read(['guitars', 'pickups'], [
-    'join' => 'inner',
-    'on' => [['guitars.id' => 'pickups.guitar_id']],
-    'columns' => ['guitars.model', 'pickups.type']
-]);
-```
+See [CTGDBQuery.md](CTGDBQuery.md) for the full builder documentation. Use
+`run()` when a row-producing SELECT cannot be expressed by the structured
+builder.
 
 ### ctgdb.update :: STRING, ARRAY, ARRAY -> INT
 
@@ -201,21 +185,15 @@ $affected = $db->delete('pickups', [
 ]);
 ```
 
-### ctgdb.paginate :: STRING|ctgdbQuery, ARRAY -> ARRAY
+### ctgdb.paginate :: ctgdbQuery, ARRAY -> ARRAY
 
-Paginates any result set. Source is a `CTGDBQuery` instance or a table
-name string. Runs a count query and a data query, returning materialized `data`
-and `pagination` metadata. The `total` config option skips the count query when
-the total is already known.
+Paginates a `CTGDBQuery`. Runs a count query and a data query, returning
+materialized `data` and `pagination` metadata. The `total` config option skips
+the count query when the total is already known.
 
-When `$source` is a `CTGDBQuery` and `sort`/`order` are provided in
-config, they **replace** (not append to) any existing ORDER BY on the
-query.
-
-**Preferred: CTGDBQuery**
-
-When `$source` is a `CTGDBQuery`, `page` and `per_page` from `$config`
-override the query's pagination, and `sort`/`order` override ORDER BY.
+When `sort`/`order` are provided in config, they **replace** (not append to)
+any existing ORDER BY on the query. `page` and `per_page` override the query's
+pagination.
 
 ```php
 $query = CTGDBQuery::from('guitars')
@@ -233,18 +211,34 @@ $result = $db->paginate($query, [
 // $result['pagination'] — {page, per_page, total_rows, total_pages, has_previous, has_next}
 ```
 
-**Legacy: string and array forms**
+### ctgdb.beginTransaction :: VOID -> VOID
+
+Starts a transaction on this instance's connection.
+
+### ctgdb.commit :: VOID -> VOID
+
+Commits the active transaction. Throws `INVALID_QUERY_STATE` if none is active.
+
+### ctgdb.rollBack :: VOID -> VOID
+
+Rolls back the active transaction. Throws `INVALID_QUERY_STATE` if none is
+active.
+
+### ctgdb.inTransaction :: VOID -> BOOL
+
+Returns whether this instance's connection has an active transaction.
 
 ```php
-$result = $db->paginate('guitars', [
-    'sort' => 'year_purchased',
-    'order' => 'DESC',
-    'page' => 1,
-    'per_page' => 5
-]);
-
-// $result['data'] — array of rows
-// $result['pagination'] — {page, per_page, total_rows, total_pages, has_previous, has_next}
+$db->beginTransaction();
+try {
+    $db->execute($conditionalWrite, $values);
+    $db->commit();
+} catch (Throwable $error) {
+    if ($db->inTransaction()) {
+        $db->rollBack();
+    }
+    throw $error;
+}
 ```
 
 ---

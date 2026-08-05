@@ -94,9 +94,9 @@ $pipelines[] = CTGTest::init('end-to-end — full CRUD lifecycle')
     ->stage('read back', fn(CTGTestState $state) => [
         'db' => $state->getSubject()['db'],
         'id' => $state->getSubject()['id'],
-        'row' => $state->getSubject()['db']->read('guitars', [
-            'where' => ['id' => ['type' => 'int', 'value' => (int)$state->getSubject()['id']]]
-        ])[0]
+        'row' => $state->getSubject()['db']->read(
+            CTGDBQuery::from('guitars')->where('id', '=', (int)$state->getSubject()['id'], 'int')
+        )[0]
     ])
     ->assert('read make', fn(CTGTestState $state) => $state->getSubject()['row']['make'], CTGTestPredicates::equals('TestBrand'))
     ->assert('read model', fn(CTGTestState $state) => $state->getSubject()['row']['model'], CTGTestPredicates::equals('TestModel'))
@@ -112,9 +112,9 @@ $pipelines[] = CTGTest::init('end-to-end — full CRUD lifecycle')
     ->stage('verify update', fn(CTGTestState $state) => [
         'db' => $state->getSubject()['db'],
         'id' => $state->getSubject()['id'],
-        'row' => $state->getSubject()['db']->read('guitars', [
-            'where' => ['id' => ['type' => 'int', 'value' => (int)$state->getSubject()['id']]]
-        ])[0]
+        'row' => $state->getSubject()['db']->read(
+            CTGDBQuery::from('guitars')->where('id', '=', (int)$state->getSubject()['id'], 'int')
+        )[0]
     ])
     ->assert('color updated', fn(CTGTestState $state) => $state->getSubject()['row']['color'], CTGTestPredicates::equals('UpdatedColor'))
     ->stage('delete', fn(CTGTestState $state) => [
@@ -124,9 +124,9 @@ $pipelines[] = CTGTest::init('end-to-end — full CRUD lifecycle')
         ])
     ])
     ->assert('deleted 1 row', fn(CTGTestState $state) => $state->getSubject()['affected'], CTGTestPredicates::equals(1))
-    ->stage('verify delete', fn(CTGTestState $state) => $state->getSubject()['db']->read('guitars', [
-        'where' => ['make' => ['type' => 'str', 'value' => 'TestBrand']]
-    ]))
+    ->stage('verify delete', fn(CTGTestState $state) => $state->getSubject()['db']->read(
+        CTGDBQuery::from('guitars')->where('make', '=', 'TestBrand', 'str')
+    ))
     ->assert('row is gone', fn(CTGTestState $state) => count($state->getSubject()), CTGTestPredicates::equals(0))
     ;
 

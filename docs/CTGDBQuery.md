@@ -13,16 +13,15 @@ library, raw SQL fragments create opportunities to interpolate user input.
 validated and every value is parameterized by construction.
 
 **Trust boundary:** `CTGDBQuery` handles SELECT, JOINs, WHERE conditions,
-ORDER BY, GROUP BY, LIMIT/OFFSET, and pagination. Anything the builder
-cannot express uses `run()` directly. Any `run()` call that incorporates
-user input into the SQL string should be flagged for code review — that is
-the explicit trust boundary.
+ORDER BY, GROUP BY, LIMIT/OFFSET, and pagination. A row-producing statement the
+builder cannot express uses `run()` directly; a custom non-row statement uses
+`execute()`. Any raw SQL call that incorporates user input into the SQL string
+should be flagged for code review — that is the explicit trust boundary.
 
 **Relationship to CTGDB:**
 - `CTGDBQuery` is a standalone class in `CTG\DB`
 - It is consumed directly by `run()`, `process()`, `read()`, and `paginate()`
-- `read()` and `paginate()` accept `CTGDBQuery` instances
-- Legacy table/config reads are translated into `CTGDBQuery` method calls
+- `read()` and `paginate()` accept only `CTGDBQuery` instances
 - `quoteIdentifier()` is the canonical identifier validator used by CRUD
 - `CTGDBQuery` does not execute queries — execution is always through `CTGDB`
 
@@ -432,13 +431,11 @@ SELECT COUNT(*) as total FROM (
 ### `read()` accepts CTGDBQuery
 
 ```php
-// :: STRING|ARRAY|ctgdbQuery, ARRAY -> ARRAY
-public function read(string|array|CTGDBQuery $tables, array $config = []): array;
+// :: ctgdbQuery -> ARRAY
+public function read(CTGDBQuery $query): array;
 ```
 
-When `$tables` is a `CTGDBQuery`:
-- `$config` is ignored (the query object contains all configuration)
-- The query is passed directly to `run()` for materialized execution
+The query is passed directly to `run()` for materialized execution:
 
 ```php
 $rows = $db->read(
@@ -459,11 +456,10 @@ $byMake = $db->process(
 ### `paginate()` accepts CTGDBQuery
 
 ```php
-// :: STRING|ctgdbQuery, ARRAY -> ARRAY
-public function paginate(string|CTGDBQuery $source, array $config = []): array;
+// :: ctgdbQuery, ARRAY -> ARRAY
+public function paginate(CTGDBQuery $source, array $config = []): array;
 ```
 
-When `$source` is a `CTGDBQuery`:
 - `page` and `per_page` from `$config` override the query's pagination
 - `sort` and `order` from `$config` override the query's ORDER BY
 - `total` from `$config` skips the count query
@@ -516,18 +512,6 @@ $gibsons = (clone $base)->where('make', '=', 'Gibson', 'str');
 ### Single table with conditions
 
 ```php
-// Old way (raw string WHERE)
-$db->read('guitars', [
-    'where' => "make = ? AND year_purchased >= ?",
-    'values' => [
-        ['type' => 'str', 'value' => 'Fender'],
-        ['type' => 'int', 'value' => 2020]
-    ],
-    'order' => 'model ASC',
-    'limit' => 10
-]);
-
-// New way
 $db->read(
     CTGDBQuery::from('guitars')
         ->where('make', '=', 'Fender', 'str')
@@ -580,14 +564,16 @@ $result = $db->paginate($query, ['sort' => 'guitars.make', 'page' => 1]);
 | `as_query` config | Removed | The query object is the query |
 | `where` as string in `read()` | Removed | `CTGDBQuery::from()->where()` |
 | `where_raw` config | Removed | `CTGDBQuery::from()->where()` |
+| Table/config `read()` | Removed | Pass a `CTGDBQuery` |
+| String-table `paginate()` | Removed | Pass a `CTGDBQuery` |
 
-`read()` no longer accepts raw WHERE or HAVING fragments. Its compatibility
-table/config form is translated into structured `CTGDBQuery` calls.
+`read()` no longer accepts table/config forms or raw WHERE/HAVING fragments.
 
 ## What It Does NOT Replace
 
 - `run()` — still the execution primitive, still accepts raw SQL for
   queries the builder cannot express
+- `execute()` — accepts raw SQL for custom non-row statements
 - `create()`, `update()`, `delete()` — write operations are already
   fully parameterized
 ---
@@ -620,14 +606,12 @@ unless the query cannot be expressed with the builder.
 └─────────────────────────────────────────────────┘
 ```
 
-### Compatibility Status
-
-Legacy table/config reads remain available but are translated into
-`CTGDBQuery`. Removed raw-fragment paths stay rejected:
+### Removed Interface Status
 
 | Path | Status | Notes |
 |------|--------|-------|
-| Table/config `read()` | **Compatibility** | Translated into `CTGDBQuery` |
+| Table/config `read()` | **Removed** | Pass a `CTGDBQuery` |
+| String-table `paginate()` | **Removed** | Pass a `CTGDBQuery` |
 | `read()` with string `where` | **Removed** | Use `where()` |
 | `read()` with `where_raw` | **Removed** | Use `where()` |
 | `read()` with string `having` | **Removed** | Not supported |
@@ -635,15 +619,15 @@ Legacy table/config reads remain available but are translated into
 | `CTGDB::join()` / `leftJoin()` shortcuts | **Removed** | Use the corresponding `CTGDBQuery` join methods |
 | `as_query` config option | **Removed** | The query object is the query |
 
-### Release Gate: `run()` Audit
+### Release Gate: Raw SQL Audit
 
 Before any release of application code built on ctg-php-db:
 
-1. **Inventory all `run()` calls.** Every direct `run()` usage must be
-   documented with a justification for why `CTGDBQuery` could not
-   express the query.
+1. **Inventory all `run()` and `execute()` calls.** Every raw SQL usage must be
+   documented with a justification for why the structured query or CRUD APIs
+   could not express the operation.
 
-2. **Classify each `run()` call:**
+2. **Classify each raw SQL call:**
    - **Static SQL** — no external input touches the SQL string. Safe.
      Example: `$db->run('SELECT COUNT(*) FROM migrations')`
    - **Parameterized** — external input is bound via `values`, never
@@ -654,7 +638,7 @@ Before any release of application code built on ctg-php-db:
      Must be refactored to use parameterized form or `CTGDBQuery`.
 
 3. **Unparameterized user input in a SQL string is a release blocker.**
-   No exceptions. If a `run()` call concatenates or interpolates any
+   No exceptions. If a `run()` or `execute()` call concatenates or interpolates any
    value derived from user input, HTTP request data, or external API
    responses into the SQL string, it must be refactored before release.
 
@@ -663,10 +647,9 @@ Before any release of application code built on ctg-php-db:
 For manual review (automate when feasible):
 
 - [ ] All read queries use `CTGDBQuery` unless documented exception
-- [ ] No deprecated `read()` string paths in new code
-- [ ] Every `run()` call has a comment documenting why it exists
-- [ ] Every `run()` call is classified as static, parameterized, or dynamic
-- [ ] Zero dynamic SQL `run()` calls with unparameterized user input
+- [ ] Every raw SQL call has a comment documenting why it exists
+- [ ] Every raw SQL call is classified as static, parameterized, or dynamic
+- [ ] Zero dynamic SQL calls with unparameterized user input
 - [ ] `CTGDBQuery` tests pass (unit + integration)
 - [ ] Security tests cover `CTGDBQuery` paths (injection attempts rejected)
 

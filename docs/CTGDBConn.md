@@ -102,7 +102,8 @@ $rows = $connection->query(
 
 Prepares and executes one non-row statement and returns its affected-row
 count. Row-producing statements are rejected with `INVALID_QUERY_STATE`.
-`CTGDB::update()` and `CTGDB::delete()` delegate to this boundary.
+`CTGDB::execute()`, `CTGDB::update()`, and `CTGDB::delete()` delegate to this
+boundary.
 
 ```php
 $affected = $connection->execute(
@@ -210,6 +211,7 @@ subclasses from retaining a driver object that could continue operating after
 the wrapper is invalidated.
 
 `CTGDB` composes a `CTGDBConn` and uses `query()` for `run()`, `insert()` for
-`create()`, and `execute()` for `update()` and `delete()`. It does not forward
-the connection lifecycle API. Callers needing transaction or invalidation
-control retain the connection they inject into `CTGDB`.
+`create()`, and `execute()` for custom commands, `update()`, and `delete()`. It
+exposes the connection's transaction operations, but not persistence state or
+invalidation. Callers needing fail-closed invalidation control retain the
+connection they inject into `CTGDB`.

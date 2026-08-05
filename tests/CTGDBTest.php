@@ -50,23 +50,37 @@ return [
         ->assert('returns CTGDB instance', fn(CTGTestState $s) => $s->getSubject()['db'], CTGTestPredicates::isInstanceOf(CTGDB::class))
         ->assert('uses supplied connection instance', fn(CTGTestState $s) => $s->getSubject()['rejected'], CTGTestPredicates::isTrue()),
 
-    CTGTest::init('connection — explicit lifecycle remains on supplied connection')
+    CTGTest::init('transaction — main API controls supplied connection')
         ->stage('exercise', function(CTGTestState $s) use ($dbConfig) {
             $connection = CTGDBConn::init($dbConfig());
             $db = new CTGDB($connection);
-            $connection->beginTransaction();
-            $activeBeforeQuery = $connection->inTransaction();
+            $db->beginTransaction();
+            $activeBeforeQuery = $db->inTransaction();
             $queryResult = $db->run('SELECT 1 AS inside_transaction');
-            $connection->rollBack();
+            $db->rollBack();
             return [
                 'active_before_query' => $activeBeforeQuery,
                 'query_result' => (int)$queryResult[0]['inside_transaction'],
-                'active_after_rollback' => $connection->inTransaction(),
+                'active_after_rollback' => $db->inTransaction(),
             ];
         })
-        ->assert('connection owns transaction state', fn(CTGTestState $s) => $s->getSubject()['active_before_query'], CTGTestPredicates::isTrue())
-        ->assert('CTGDB executes within supplied transaction', fn(CTGTestState $s) => $s->getSubject()['query_result'], CTGTestPredicates::equals(1))
-        ->assert('connection rollback ends transaction', fn(CTGTestState $s) => $s->getSubject()['active_after_rollback'], CTGTestPredicates::isFalse()),
+        ->assert('transaction is active', fn(CTGTestState $s) => $s->getSubject()['active_before_query'], CTGTestPredicates::isTrue())
+        ->assert('query executes within transaction', fn(CTGTestState $s) => $s->getSubject()['query_result'], CTGTestPredicates::equals(1))
+        ->assert('rollback ends transaction', fn(CTGTestState $s) => $s->getSubject()['active_after_rollback'], CTGTestPredicates::isFalse()),
+
+    CTGTest::init('transaction — main API commits active transaction')
+        ->stage('exercise', function(CTGTestState $s) use ($dbConfig) {
+            $db = CTGDB::init($dbConfig());
+            $db->beginTransaction();
+            $affected = $db->execute('UPDATE guitars SET color = color WHERE id = ?', [-1]);
+            $db->commit();
+            return [
+                'affected' => $affected,
+                'active_after_commit' => $db->inTransaction(),
+            ];
+        })
+        ->assert('execute returns affected-row count', fn(CTGTestState $s) => $s->getSubject()['affected'], CTGTestPredicates::equals(0))
+        ->assert('commit ends transaction', fn(CTGTestState $s) => $s->getSubject()['active_after_commit'], CTGTestPredicates::isFalse()),
 
     CTGTest::init('init — bad credentials throws CTGDBError')
         ->stage('attempt', function(CTGTestState $s) use ($dbConfig) {
@@ -178,6 +192,36 @@ return [
         ->stage('attempt', function(CTGTestState $s) use ($dbConfig) {
             try {
                 CTGDB::init($dbConfig())->run('DO 1');
+                return 'no exception';
+            } catch (CTGDBError $error) {
+                return $error->type;
+            }
+        })
+        ->assert('throws INVALID_QUERY_STATE', fn(CTGTestState $s) => $s->getSubject(), CTGTestPredicates::equals('INVALID_QUERY_STATE')),
+
+    // ── execute() — raw non-row statements ─────────────────────────
+
+    CTGTest::init('execute — parameterized custom write')
+        ->stage('connect', fn(CTGTestState $s) => CTGDB::init($dbConfig()))
+        ->stage('execute', fn(CTGTestState $s) => [
+            'db' => $s->getSubject(),
+            'affected' => $s->getSubject()->execute(
+                'UPDATE guitars SET color = ? WHERE id = ?',
+                ['ExecuteTestColor', 1]
+            ),
+        ])
+        ->assert('returns affected-row count', fn(CTGTestState $s) => $s->getSubject()['affected'], CTGTestPredicates::equals(1))
+        ->stage('verify', fn(CTGTestState $s) => [
+            'db' => $s->getSubject()['db'],
+            'row' => $s->getSubject()['db']->run('SELECT color FROM guitars WHERE id = ?', [1])[0],
+        ])
+        ->assert('bound value was written', fn(CTGTestState $s) => $s->getSubject()['row']['color'], CTGTestPredicates::equals('ExecuteTestColor'))
+        ->stage('revert', fn(CTGTestState $s) => $s->getSubject()['db']->update('guitars', ['color' => 'Black'], ['id' => 1])),
+
+    CTGTest::init('execute — rejects row-producing statements')
+        ->stage('attempt', function(CTGTestState $s) use ($dbConfig) {
+            try {
+                CTGDB::init($dbConfig())->execute('SELECT 1');
                 return 'no exception';
             } catch (CTGDBError $error) {
                 return $error->type;
@@ -330,23 +374,6 @@ return [
         ))
         ->assert('only active pickups', fn(CTGTestState $s) => $s->getSubject(), CTGTestPredicates::hasCount(2)),
 
-    CTGTest::init('read legacy config — translates join through CTGDBQuery')
-        ->stage('connect', fn(CTGTestState $s) => CTGDB::init($dbConfig()))
-        ->stage('execute', fn(CTGTestState $s) => $s->getSubject()->read(
-            ['guitars', 'pickups'],
-            [
-                'join' => 'inner',
-                'on' => [['guitars.id' => 'pickups.guitar_id']],
-                'columns' => ['guitars.model', 'pickups.type'],
-                'where' => ['pickups.type' => ['type' => 'str', 'value' => 'active']],
-                'order' => 'guitars.id ASC',
-                'limit' => 2,
-            ]
-        ))
-        ->assert('returns configured rows', fn(CTGTestState $s) => $s->getSubject(), CTGTestPredicates::hasCount(2))
-        ->assert('returns selected model', fn(CTGTestState $s) => isset($s->getSubject()[0]['model']), CTGTestPredicates::isTrue())
-        ->assert('returns selected pickup type', fn(CTGTestState $s) => $s->getSubject()[0]['type'], CTGTestPredicates::equals('active')),
-
     // ── update() ────────────────────────────────────────────────────
 
     CTGTest::init('update — single row')
@@ -462,9 +489,9 @@ return [
 
     // ── paginate() ──────────────────────────────────────────────────
 
-    CTGTest::init('paginate — table name source')
+    CTGTest::init('paginate — structured query source')
         ->stage('connect', fn(CTGTestState $s) => CTGDB::init($dbConfig()))
-        ->stage('execute', fn(CTGTestState $s) => $s->getSubject()->paginate('guitars', [
+        ->stage('execute', fn(CTGTestState $s) => $s->getSubject()->paginate(CTGDBQuery::from('guitars'), [
             'sort' => 'year_purchased',
             'order' => 'DESC',
             'page' => 1,
@@ -482,7 +509,7 @@ return [
 
     CTGTest::init('paginate — page 2')
         ->stage('connect', fn(CTGTestState $s) => CTGDB::init($dbConfig()))
-        ->stage('execute', fn(CTGTestState $s) => $s->getSubject()->paginate('guitars', [
+        ->stage('execute', fn(CTGTestState $s) => $s->getSubject()->paginate(CTGDBQuery::from('guitars'), [
             'sort' => 'id',
             'page' => 2,
             'per_page' => 3
@@ -494,7 +521,7 @@ return [
 
     CTGTest::init('paginate — last page')
         ->stage('connect', fn(CTGTestState $s) => CTGDB::init($dbConfig()))
-        ->stage('execute', fn(CTGTestState $s) => $s->getSubject()->paginate('guitars', [
+        ->stage('execute', fn(CTGTestState $s) => $s->getSubject()->paginate(CTGDBQuery::from('guitars'), [
             'sort' => 'id',
             'page' => 3,
             'per_page' => 3
@@ -540,8 +567,7 @@ return [
 
     CTGTest::init('paginate — returns materialized rows')
         ->stage('connect', fn(CTGTestState $s) => CTGDB::init($dbConfig()))
-        ->stage('execute', fn(CTGTestState $s) => $s->getSubject()->paginate('guitars', [
-            'columns' => ['id', 'make'],
+        ->stage('execute', fn(CTGTestState $s) => $s->getSubject()->paginate(CTGDBQuery::from('guitars')->columns('id', 'make'), [
             'sort' => 'id',
             'page' => 1,
             'per_page' => 3
@@ -552,7 +578,7 @@ return [
 
     CTGTest::init('paginate — pre-computed total skips count')
         ->stage('connect', fn(CTGTestState $s) => CTGDB::init($dbConfig()))
-        ->stage('execute', fn(CTGTestState $s) => $s->getSubject()->paginate('guitars', [
+        ->stage('execute', fn(CTGTestState $s) => $s->getSubject()->paginate(CTGDBQuery::from('guitars'), [
             'sort' => 'id',
             'page' => 1,
             'per_page' => 3,
@@ -579,7 +605,7 @@ return [
         ->stage('connect', fn(CTGTestState $s) => CTGDB::init($dbConfig()))
         ->stage('attempt', function(CTGTestState $s) {
             try {
-                $s->getSubject()->paginate('guitars', [
+                $s->getSubject()->paginate(CTGDBQuery::from('guitars'), [
                     'sort' => 'id',
                     'order' => 'SIDEWAYS'
                 ]);
@@ -625,74 +651,9 @@ return [
         })
         ->assert('throws INVALID_ARGUMENT', fn(CTGTestState $s) => $s->getSubject(), CTGTestPredicates::equals('INVALID_ARGUMENT')),
 
-    // ── Legacy raw SQL paths rejected ─────────────────────────────────
-
-    CTGTest::init('validate — string where in read() throws INVALID_ARGUMENT')
-        ->stage('connect', fn(CTGTestState $s) => CTGDB::init($dbConfig()))
-        ->stage('attempt', function(CTGTestState $s) {
-            try {
-                $s->getSubject()->read('guitars', ['where' => 'make = ?', 'values' => [['type' => 'str', 'value' => 'Fender']]]);
-                return 'no exception';
-            } catch (CTGDBError $e) {
-                return $e->type;
-            }
-        })
-        ->assert('throws INVALID_ARGUMENT', fn(CTGTestState $s) => $s->getSubject(), CTGTestPredicates::equals('INVALID_ARGUMENT')),
-
-    CTGTest::init('validate — where_raw in join throws INVALID_ARGUMENT')
-        ->stage('connect', fn(CTGTestState $s) => CTGDB::init($dbConfig()))
-        ->stage('attempt', function(CTGTestState $s) {
-            try {
-                $s->getSubject()->read(['guitars', 'pickups'], [
-                    'join' => 'inner',
-                    'on' => [['guitars.id' => 'pickups.guitar_id']],
-                    'where_raw' => ['where' => 'guitars.make = ?', 'values' => [['type' => 'str', 'value' => 'Fender']]]
-                ]);
-                return 'no exception';
-            } catch (CTGDBError $e) {
-                return $e->type;
-            }
-        })
-        ->assert('throws INVALID_ARGUMENT', fn(CTGTestState $s) => $s->getSubject(), CTGTestPredicates::equals('INVALID_ARGUMENT')),
-
-    CTGTest::init('validate — string where in join throws INVALID_ARGUMENT')
-        ->stage('connect', fn(CTGTestState $s) => CTGDB::init($dbConfig()))
-        ->stage('attempt', function(CTGTestState $s) {
-            try {
-                $s->getSubject()->read(['guitars', 'pickups'], [
-                    'join' => 'inner',
-                    'on' => [['guitars.id' => 'pickups.guitar_id']],
-                    'where' => 'guitars.make = ?',
-                    'values' => [['type' => 'str', 'value' => 'Fender']]
-                ]);
-                return 'no exception';
-            } catch (CTGDBError $e) {
-                return $e->type;
-            }
-        })
-        ->assert('throws INVALID_ARGUMENT', fn(CTGTestState $s) => $s->getSubject(), CTGTestPredicates::equals('INVALID_ARGUMENT')),
-
-    CTGTest::init('validate — raw having in join throws INVALID_ARGUMENT')
-        ->stage('connect', fn(CTGTestState $s) => CTGDB::init($dbConfig()))
-        ->stage('attempt', function(CTGTestState $s) {
-            try {
-                $s->getSubject()->read(['guitars', 'pickups'], [
-                    'join' => 'inner',
-                    'on' => [['guitars.id' => 'pickups.guitar_id']],
-                    'where' => ['guitars.make' => ['type' => 'str', 'value' => 'Fender']],
-                    'group' => 'guitars.id',
-                    'having' => 'COUNT(*) > 1'
-                ]);
-                return 'no exception';
-            } catch (CTGDBError $e) {
-                return $e->type;
-            }
-        })
-        ->assert('throws INVALID_ARGUMENT', fn(CTGTestState $s) => $s->getSubject(), CTGTestPredicates::equals('INVALID_ARGUMENT')),
-
     CTGTest::init('validate — paginate clamps negative page to 1')
         ->stage('connect', fn(CTGTestState $s) => CTGDB::init($dbConfig()))
-        ->stage('execute', fn(CTGTestState $s) => $s->getSubject()->paginate('guitars', [
+        ->stage('execute', fn(CTGTestState $s) => $s->getSubject()->paginate(CTGDBQuery::from('guitars'), [
             'sort' => 'id',
             'page' => -1,
             'per_page' => 3

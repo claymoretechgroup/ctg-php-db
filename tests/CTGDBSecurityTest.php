@@ -76,7 +76,7 @@ foreach ($tablePayloads as $label => $payload) {
         ->stage('attempt read', function(CTGTestState $state) use ($payload){
             $db = $state->getSubject();
             try {
-                $db->read($payload);
+                $db->read(CTGDBQuery::from($payload));
                 return 'NOT BLOCKED';
             } catch (CTGDBError $e) {
                 return $e->type;
@@ -214,9 +214,9 @@ foreach ($valuePayloads as $label => $payload) {
         ->stage('connect', fn(CTGTestState $state) => CTGDB::init($dbConfig()))
         ->stage('execute', function(CTGTestState $state) use ($payload){
             $db = $state->getSubject();
-            $result = $db->read('guitars', [
-                'where' => ['make' => ['type' => 'str', 'value' => $payload]]
-            ]);
+            $result = $db->read(
+                CTGDBQuery::from('guitars')->where('make', '=', $payload, 'str')
+            );
             return $result;
         })
         ->assert('returns empty — payload treated as literal data', fn(CTGTestState $state) => count($state->getSubject()), CTGTestPredicates::equals(0))
@@ -238,14 +238,47 @@ $pipelines[] = CTGTest::init('value injection — payload stored and retrieved a
     ->stage('read back', fn(CTGTestState $state) => [
         'db' => $state->getSubject()['db'],
         'id' => $state->getSubject()['id'],
-        'row' => $state->getSubject()['db']->read('guitars', [
-            'where' => ['id' => ['type' => 'int', 'value' => (int)$state->getSubject()['id']]]
-        ])[0]
+        'row' => $state->getSubject()['db']->read(
+            CTGDBQuery::from('guitars')->where('id', '=', (int)$state->getSubject()['id'], 'int')
+        )[0]
     ])
     ->assert('make stored literally', fn(CTGTestState $state) => $state->getSubject()['row']['make'], CTGTestPredicates::equals("'; DROP TABLE guitars;--"))
     ->assert('model stored literally', fn(CTGTestState $state) => $state->getSubject()['row']['model'], CTGTestPredicates::equals("\" OR \"1\"=\"1"))
     ->stage('cleanup', fn(CTGTestState $state) => $state->getSubject()['db']->delete('guitars', [
         'id' => ['type' => 'int', 'value' => (int)$state->getSubject()['id']]
+    ]))
+    ;
+
+$pipelines[] = CTGTest::init('value injection — execute binds custom-write values')
+    ->stage('connect', fn(CTGTestState $state) => CTGDB::init($dbConfig()))
+    ->stage('create', fn(CTGTestState $state) => [
+        'db' => $state->getSubject(),
+        'id' => $state->getSubject()->create('guitars', [
+            'make' => 'ExecuteBindingTest',
+            'model' => 'Before',
+            'color' => 'Black',
+            'year_purchased' => 2025,
+        ]),
+    ])
+    ->stage('execute', fn(CTGTestState $state) => [
+        'db' => $state->getSubject()['db'],
+        'id' => $state->getSubject()['id'],
+        'affected' => $state->getSubject()['db']->execute(
+            'UPDATE guitars SET model = ? WHERE id = ?',
+            ["'; DROP TABLE guitars;--", (int)$state->getSubject()['id']]
+        ),
+    ])
+    ->assert('updates one row', fn(CTGTestState $state) => $state->getSubject()['affected'], CTGTestPredicates::equals(1))
+    ->stage('read back', fn(CTGTestState $state) => [
+        'db' => $state->getSubject()['db'],
+        'id' => $state->getSubject()['id'],
+        'row' => $state->getSubject()['db']->read(
+            CTGDBQuery::from('guitars')->where('id', '=', (int)$state->getSubject()['id'], 'int')
+        )[0],
+    ])
+    ->assert('payload stored literally', fn(CTGTestState $state) => $state->getSubject()['row']['model'], CTGTestPredicates::equals("'; DROP TABLE guitars;--"))
+    ->stage('cleanup', fn(CTGTestState $state) => $state->getSubject()['db']->delete('guitars', [
+        'id' => ['type' => 'int', 'value' => (int)$state->getSubject()['id']],
     ]))
     ;
 
@@ -309,7 +342,7 @@ foreach ($sortDirPayloads as $label => $payload) {
         ->stage('attempt', function(CTGTestState $state) use ($payload){
             $db = $state->getSubject();
             try {
-                $db->paginate('guitars', [
+                $db->paginate(CTGDBQuery::from('guitars'), [
                     'sort' => 'id',
                     'order' => $payload
                 ]);
@@ -342,9 +375,9 @@ $pipelines[] = CTGTest::init('second-order injection — stored payload does not
     ->stage('read with stored value as filter', fn(CTGTestState $state) => [
         'db' => $state->getSubject()['db'],
         'id' => $state->getSubject()['id'],
-        'rows' => $state->getSubject()['db']->read('guitars', [
-            'where' => ['make' => ['type' => 'str', 'value' => "' OR '1'='1"]]
-        ])
+        'rows' => $state->getSubject()['db']->read(
+            CTGDBQuery::from('guitars')->where('make', '=', "' OR '1'='1", 'str')
+        )
     ])
     ->assert('returns exactly 1 row (the one we stored)', fn(CTGTestState $state) => count($state->getSubject()['rows']), CTGTestPredicates::equals(1))
     ->assert('not all rows', fn(CTGTestState $state) => count($state->getSubject()['rows']) < 9, CTGTestPredicates::isTrue())
@@ -363,9 +396,9 @@ $pipelines[] = CTGTest::init('type coercion — int type enforced on bind')
     ->stage('execute', function(CTGTestState $state) {
             $db = $state->getSubject();
         // PDO with emulated prepares off will enforce int type
-        $result = $db->read('guitars', [
-            'where' => ['id' => ['type' => 'int', 'value' => 1]]
-        ]);
+        $result = $db->read(
+            CTGDBQuery::from('guitars')->where('id', '=', 1, 'int')
+        );
         return count($result);
     })
     ->assert('returns exactly 1', fn(CTGTestState $state) => $state->getSubject(), CTGTestPredicates::equals(1))
@@ -380,11 +413,11 @@ $pipelines[] = CTGTest::init('batch injection — multiple injection vectors at 
     ->stage('attempt', function(CTGTestState $state) {
             $db = $state->getSubject();
         $attacks = [
-            'read with injected table'       => [fn() => $db->read("guitars; DROP TABLE guitars;--"),                                               'INVALID_IDENTIFIER'],
+            'read with injected table'       => [fn() => $db->read(CTGDBQuery::from("guitars; DROP TABLE guitars;--")),                             'INVALID_IDENTIFIER'],
             'create with injected table'     => [fn() => $db->create("guitars; DROP TABLE guitars;--", ['make' => 'x']),                            'INVALID_IDENTIFIER'],
             'where with injected operator'   => [fn() => CTGDBQuery::from('guitars')->where('make', 'DROP', 'x', 'str'),                            'INVALID_OPERATOR'],
             'join with injected type'        => [fn() => CTGDBQuery::from('guitars')->join('pickups', 'EVIL', ['guitars.id' => 'pickups.guitar_id']),'INVALID_JOIN_TYPE'],
-            'paginate with injected sort'    => [fn() => $db->paginate('guitars', ['sort' => 'id', 'order' => 'EVIL']),                             'INVALID_SORT'],
+            'paginate with injected sort'    => [fn() => $db->paginate(CTGDBQuery::from('guitars'), ['sort' => 'id', 'order' => 'EVIL']),             'INVALID_SORT'],
         ];
         $outcomes = [];
         foreach ($attacks as $label => [$attack, $expectedType]) {
@@ -425,7 +458,7 @@ foreach ($sortColPayloads as $label => $payload) {
         ->stage('attempt', function(CTGTestState $state) use ($payload){
             $db = $state->getSubject();
             try {
-                $db->paginate('guitars', [
+                $db->paginate(CTGDBQuery::from('guitars'), [
                     'sort' => $payload,
                     'page' => 1,
                     'per_page' => 3

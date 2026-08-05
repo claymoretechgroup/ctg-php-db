@@ -28,6 +28,12 @@ class CTGDB {
         return $this->_connection->query($sql, $resolvedValues);
     }
 
+    // :: STRING, ARRAY -> INT
+    // Executes a custom non-row prepared statement and returns its affected-row count
+    public function execute(string $sql, array $values = []): int {
+        return $this->_connection->execute($sql, $values);
+    }
+
     // :: STRING|ctgdbQuery, (ARRAY, MIXED -> MIXED), MIXED, ARRAY -> MIXED
     // Processes row-producing query results one row at a time and returns the final state
     public function process(string|CTGDBQuery $query, callable $processor, mixed $initial = null, array $values = []): mixed {
@@ -56,13 +62,10 @@ class CTGDB {
         return $this->_connection->insert("INSERT INTO {$table} ({$colStr}) VALUES ({$phStr})", $values);
     }
 
-    // :: STRING|ARRAY|ctgdbQuery, ARRAY -> ARRAY
-    // Builds or accepts a structured SELECT query and returns its materialized rows
-    public function read(string|array|CTGDBQuery $tables, array $config = []): array {
-        if ($tables instanceof CTGDBQuery) {
-            return $this->run($tables);
-        }
-        return $this->run($this->_createReadQuery($tables, $config));
+    // :: ctgdbQuery -> ARRAY
+    // Executes a structured SELECT query and returns its materialized rows
+    public function read(CTGDBQuery $query): array {
+        return $this->run($query);
     }
 
     // :: STRING, ARRAY, ARRAY -> INT
@@ -109,16 +112,13 @@ class CTGDB {
         return $this->_connection->execute("DELETE FROM {$table}{$whereSql}", $values);
     }
 
-    // :: STRING|ctgdbQuery, ARRAY -> ARRAY
+    // :: ctgdbQuery, ARRAY -> ARRAY
     // Paginate any result set with metadata
-    public function paginate(string|CTGDBQuery $source, array $config = []): array {
+    public function paginate(CTGDBQuery $source, array $config = []): array {
         $page = max(1, $config['page'] ?? 1);
         $perPage = max(1, $config['per_page'] ?? 20);
         $total = $config['total'] ?? null;
-        $query = $source instanceof CTGDBQuery ? clone $source : CTGDBQuery::from($source);
-        if (is_string($source) && isset($config['columns'])) {
-            $query->columns(...$config['columns']);
-        }
+        $query = clone $source;
         if (isset($config['sort'])) {
             $query->resetOrderBy()->orderBy($config['sort'], $config['order'] ?? 'ASC');
         }
@@ -134,6 +134,30 @@ class CTGDB {
             'data' => $data,
             'pagination' => $this->calcPaginationInfo($page, $perPage, $total),
         ];
+    }
+
+    // :: VOID -> VOID
+    // Starts a transaction for subsequent operations on this database instance
+    public function beginTransaction(): void {
+        $this->_connection->beginTransaction();
+    }
+
+    // :: VOID -> VOID
+    // Commits the active transaction
+    public function commit(): void {
+        $this->_connection->commit();
+    }
+
+    // :: VOID -> VOID
+    // Rolls back the active transaction
+    public function rollBack(): void {
+        $this->_connection->rollBack();
+    }
+
+    // :: VOID -> BOOL
+    // Returns whether this database instance has an active transaction
+    public function inTransaction(): bool {
+        return $this->_connection->inTransaction();
     }
 
     /**
@@ -161,120 +185,6 @@ class CTGDB {
      * Private Methods
      *
      */
-
-    // :: STRING|ARRAY, ARRAY -> ctgdbQuery
-    // Translates the legacy read interface into the canonical SELECT builder
-    private function _createReadQuery(string|array $tables, array $config): CTGDBQuery {
-        if (is_string($tables)) {
-            $query = CTGDBQuery::from($tables);
-        } else {
-            if ($tables === []) {
-                throw new CTGDBError('INVALID_ARGUMENT', 'read() requires at least one table');
-            }
-            $baseTable = array_shift($tables);
-            $query = CTGDBQuery::from($baseTable);
-            $this->_configureReadJoins($query, $tables, $config);
-        }
-        $this->_configureReadQuery($query, $config);
-        return $query;
-    }
-
-    // :: ctgdbQuery, ARRAY, ARRAY -> VOID
-    // Translates legacy uniform or per-table join configuration into builder calls
-    private function _configureReadJoins(CTGDBQuery $query, array $tables, array $config): void {
-        $joinType = $config['join'] ?? 'inner';
-        if (is_array($joinType) && isset($joinType[0]['type'])) {
-            if (count($joinType) !== count($tables)) {
-                throw new CTGDBError(
-                    'INVALID_ARGUMENT',
-                    'Join definitions count must match joined tables count',
-                    ['join_count' => count($joinType), 'table_count' => count($tables)]
-                );
-            }
-            foreach ($joinType as $index => $joinDefinition) {
-                $query->join($tables[$index], $joinDefinition['type'], $joinDefinition['on'] ?? []);
-            }
-            return;
-        }
-
-        $resolvedType = is_string($joinType) ? $joinType : 'inner';
-        $on = $config['on'] ?? [];
-        foreach ($tables as $index => $table) {
-            if (!isset($on[$index])) {
-                throw new CTGDBError(
-                    'INVALID_ARGUMENT',
-                    "Missing 'on' condition for join table: {$table}",
-                    ['table' => $table, 'index' => $index]
-                );
-            }
-            $query->join($table, $resolvedType, $on[$index]);
-        }
-    }
-
-    // :: ctgdbQuery, ARRAY -> VOID
-    // Translates supported legacy SELECT configuration into builder calls
-    private function _configureReadQuery(CTGDBQuery $query, array $config): void {
-        if (isset($config['columns'])) {
-            $query->columns(...$config['columns']);
-        }
-        if (array_key_exists('where_raw', $config)) {
-            throw new CTGDBError(
-                'INVALID_ARGUMENT',
-                'where_raw is no longer supported. Use CTGDBQuery instead.',
-                ['where_raw' => $config['where_raw']]
-            );
-        }
-        if (isset($config['where'])) {
-            if (is_string($config['where'])) {
-                throw new CTGDBError(
-                    'INVALID_ARGUMENT',
-                    'String where is no longer supported in read(). Use CTGDBQuery instead.',
-                    ['where' => $config['where']]
-                );
-            }
-            $this->_configureReadWhere($query, $config['where']);
-        }
-        if (isset($config['group'])) {
-            $groups = array_map('trim', explode(',', $config['group']));
-            $query->groupBy(...$groups);
-        }
-        if (array_key_exists('having', $config)) {
-            throw new CTGDBError(
-                'INVALID_ARGUMENT',
-                'Raw having is no longer supported. Use CTGDBQuery instead.',
-                ['having' => $config['having']]
-            );
-        }
-        if (isset($config['order'])) {
-            $this->_configureReadOrder($query, $config['order']);
-        }
-        if (isset($config['limit'])) {
-            $query->limit((int)$config['limit']);
-        }
-    }
-
-    // :: ctgdbQuery, ARRAY -> VOID
-    // Converts equality-only legacy WHERE entries into structured conditions
-    private function _configureReadWhere(CTGDBQuery $query, array $where): void {
-        foreach ($where as $column => $condition) {
-            $value = $condition;
-            $type = null;
-            if (is_array($condition) && array_key_exists('type', $condition) && array_key_exists('value', $condition)) {
-                $value = $condition['value'];
-                $type = $condition['type'];
-            }
-            $query->where($column, '=', $value, $type);
-        }
-    }
-
-    // :: ctgdbQuery, STRING -> VOID
-    // Converts a comma-separated legacy order clause into structured ordering
-    private function _configureReadOrder(CTGDBQuery $query, string $order): void {
-        foreach (array_map('trim', explode(',', $order)) as $part) {
-            $tokens = preg_split('/\s+/', $part) ?: [];
-            $query->orderBy($tokens[0] ?? '', $tokens[1] ?? 'ASC');
-        }
-    }
 
     // :: STRING|ctgdbQuery, ARRAY -> [STRING, ARRAY]
     // Resolves raw SQL or a structured query into SQL and bound values
